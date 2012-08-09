@@ -16,6 +16,7 @@
 #include <assert.h>
 #include <stdlib.h>
 #include <stdio.h>
+#include <string.h>
 #include <unistd.h>
 #include <errno.h>
 #include "channel.h"
@@ -54,45 +55,71 @@ void httpd_on_read(struct channel_entry *ch)
 	}
 }
 
-static void on_method(void *p, const char *method, const char *uri)
+static int response(struct channel_entry *ch, size_t resp_len, const char *resp)
 {
-	printf("%s():%p:method=\"%s\" uri=\"%s\"\n", __func__, p, method, uri);
-}
-
-static void on_field(void *p, const char *name, const char *value)
-{
-	printf("%s():%p:name=\"%s\" value=\"%s\"\n", __func__, p, name, value);
-}
-
-static void on_headerfinish(void *p)
-{
-	struct httpd *h = p;
-	struct channel_entry *ch = &h->channel;
 	int fd = ch->fd;
-	const char resp[] =
-		"HTTP/1.1 200 OK\r\n"
-		"\r\n";
-	const ssize_t resp_len = sizeof(resp) - 1;
 	ssize_t cnt;
 
 	cnt = write(fd, resp, resp_len);
 	if (cnt < 0) {
 		fprintf(stderr, "httpd:%s:i/o error (%d)\n", ch->desc, errno);
 		channel_close(ch);
-	} else if (cnt != resp_len) {
+		return -1;
+	} else if ((size_t)cnt != resp_len) {
 		fprintf(stderr, "httpd:%s:client stalled, closing.\n", ch->desc);
 		channel_close(ch);
+		return -1;
 	} else {
 		// TODO: support keep-alive
 		channel_close(ch);
+		return 0;
 	}
+}
+
+static void on_method(void *p, const char *method, const char *uri)
+{
+	struct httpd *h = p;
+	struct channel_entry *ch = &h->channel;
+
+	printf("%s():%p:method=\"%s\" uri=\"%s\"\n", __func__, p, method, uri);
+	if (strcmp(method, "GET")) {
+		const char resp[] =
+			"HTTP/1.1 405 Method Not Allowed\r\n"
+			"\r\n";
+		const ssize_t resp_len = sizeof(resp) - 1;
+
+		response(ch, resp_len, resp);
+	}
+	// TODO: look up service
+	// TODO: bind to service
+}
+
+static void on_field(void *p, const char *name, const char *value)
+{
+	// printf("%s():%p:name=\"%s\" value=\"%s\"\n", __func__, p, name, value);
+	if (!strcmp(name, "Host")) {
+		printf("HOST=%s\n", value);
+	} else if (!strcmp(name, "Connection")) {
+		printf("CONNECTION=%s\n", value);
+	}
+}
+
+static void on_headerfinish(void *p)
+{
+	struct httpd *h = p;
+	struct channel_entry *ch = &h->channel;
+	const char resp[] =
+		"HTTP/1.1 200 OK\r\n"
+		"\r\n";
+	const ssize_t resp_len = sizeof(resp) - 1;
+
+	response(ch, resp_len, resp);
 }
 
 static void on_data(void *p, size_t len, const void *data)
 {
 	printf("%s():%p:len=%zd data=%p\n", __func__, p, len, data);
 }
-
 
 struct channel_entry *httpd_alloc(void)
 {

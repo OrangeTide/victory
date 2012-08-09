@@ -98,10 +98,9 @@ int httpparser(struct httpparser *hp, const char *buf, size_t len)
 		const enum state state = hp->state;
 
 		if (state == S_DATA) {
-			printf("S_DATA\n");
 			if (hp->report_data)
 				hp->report_data(hp->p, len, buf);
-			printf("DATA: len=%zd\n", len);
+			fprintf(stderr, "DATA: len=%zd\n", len);
 			return 0;
 		}
 		hp->debug_ofs++;
@@ -114,7 +113,6 @@ int httpparser(struct httpparser *hp, const char *buf, size_t len)
 			} else if (ch == ' ') {
 				if (tok_add(hp->tok, &hp->cur_tok, sizeof(hp->tok), 0))
 					goto buffer_overflow;
-				printf("METHOD: '%s'\n", hp->tok);
 				hp->state = S_REQUESTLINE_URI_FIRSTCHAR;
 			} else {
 				if (tok_add(hp->tok, &hp->cur_tok, sizeof(hp->tok), ch))
@@ -135,7 +133,6 @@ int httpparser(struct httpparser *hp, const char *buf, size_t len)
 					goto buffer_overflow;
 				if (hp->report_method)
 					hp->report_method(hp->p, hp->tok, hp->tok + hp->second_tok);
-				printf("URI: '%s'\n", hp->tok + hp->second_tok);
 				tok_rewind(&hp->cur_tok);
 				hp->state = S_REQUESTLINE_HTTPVERSION;
 			} else if (ch == '\r') {
@@ -151,12 +148,10 @@ int httpparser(struct httpparser *hp, const char *buf, size_t len)
 			break;
 		case S_REQUESTLINE_HTTPVERSION:
 			// TODO: support parsing this
-			printf("S_REQUESTLINE_HTTPVERSION\n");
 			if (ch == '\r')
 				hp->state = S_REQUESTLINE_END;
 			break;
 		case S_REQUESTLINE_END:
-			printf("S_REQUESTLINE_END\n");
 			if (ch != '\n')
 				goto terrible_error;
 			hp->state = S_REQUESTHEADER_FIELDNAME_FIRSTCHAR;
@@ -167,7 +162,6 @@ int httpparser(struct httpparser *hp, const char *buf, size_t len)
 			} else if (ch == '\n' || ch == ':') {
 				goto terrible_error;
 			} else {
-				//printf("TODO: request-header add '%c'\n", ch);
 				tok_rewind(&hp->cur_tok);
 				if (tok_add(hp->tok, &hp->cur_tok, sizeof(hp->tok), ch))
 					goto buffer_overflow;
@@ -178,20 +172,19 @@ int httpparser(struct httpparser *hp, const char *buf, size_t len)
 			if (ch == '\r' || ch == '\n') {
 				goto terrible_error;
 			} else if (ch == ':') {
-				// TODO: combine into a single buffer
 				if (tok_add(hp->tok, &hp->cur_tok, sizeof(hp->tok), 0))
 					goto buffer_overflow;
-				printf("FIELDNAME: '%s'\n", hp->tok);
 				hp->state = S_REQUESTHEADER_FIELDVALUE_FIRSTCHAR;
 			} else {
-				//printf("TODO: request-header add '%c'\n", ch);
 				if (tok_add(hp->tok, &hp->cur_tok, sizeof(hp->tok), ch))
 					goto buffer_overflow;
 			}
 			break;
 		case S_REQUESTHEADER_FIELDVALUE_FIRSTCHAR:
 			if (ch == '\r') {
-				// TODO: handle EMPTY
+				/* empty field */
+				if (hp->report_field)
+					hp->report_field(hp->p, hp->tok, "");
 			} else if (ch == '\n') {
 				goto terrible_error;
 			} else if (isspace(ch)) {
@@ -205,9 +198,10 @@ int httpparser(struct httpparser *hp, const char *buf, size_t len)
 			break;
 		case S_REQUESTHEADER_FIELDVALUE:
 			if (ch == '\r') {
+				if (tok_add(hp->tok, &hp->cur_tok, sizeof(hp->tok), 0))
+					goto buffer_overflow;
 				if (hp->report_field)
 					hp->report_field(hp->p, hp->tok, hp->tok + hp->second_tok);
-				printf("FIELDVALUE: '%s'\n", hp->tok + hp->second_tok);
 				hp->state = S_REQUESTHEADER_EOL;
 			} else if (ch == '\n') {
 				goto terrible_error;
@@ -217,14 +211,12 @@ int httpparser(struct httpparser *hp, const char *buf, size_t len)
 			}
 			break;
 		case S_REQUESTHEADER_EOL:
-			printf("S_REQUESTHEADER_EOL\n");
 			if (ch != '\n')
 				goto terrible_error;
 			else
 				hp->state = S_REQUESTHEADER_FIELDNAME_FIRSTCHAR;
 			break;
 		case S_REQUESTHEADER_BLANKLINE:
-			printf("S_REQUESTHEADER_BLANKLINE\n");
 			if (ch != '\n')
 				goto terrible_error;
 			if (hp->report_headerfinish)

@@ -33,6 +33,7 @@ struct server {
 	struct channel_entry channel;
 };
 
+static int channel_count; /* used to terminate channel_loop() */
 static struct channel_entry **channels;
 static unsigned max_channels;
 static fd_set channel_fdset;
@@ -90,12 +91,15 @@ static void channel_add_entry(int fd, struct channel_entry *ch)
 	assert(channels[fd] == NULL); /* must not be used */
 	channels[fd] = ch;
 	ch->fd = fd;
+	channel_ready(ch);
+	channel_count++;
 }
 
 static void channel_remove_entry(struct channel_entry *ch)
 {
 	int fd = ch->fd;
 
+	channel_count--;
 	channel_not_ready(ch);
 	channels[fd] = NULL;
 	if (ch->free)
@@ -161,7 +165,6 @@ static void server_on_read(struct channel_entry *ch)
 	newch->on_read = serv->client_on_read;
 	newch->free = serv->client_free;
 	channel_add_entry(newfd, newch);
-	channel_ready(newch);
 }
 
 int channel_server_start(const char *node, const char *service,
@@ -226,7 +229,7 @@ void channel_loop(void)
 	int cnt;
 	unsigned i;
 
-	while (1) {
+	while (channel_count > 0) {
 		rfds = channel_fdset;
 		cnt = select(max_channels, &rfds, NULL, NULL, NULL);
 		if (cnt < 0) {
