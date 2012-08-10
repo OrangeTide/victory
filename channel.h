@@ -16,15 +16,21 @@
 #ifndef CHANNEL_H
 #define CHANNEL_H
 
-struct channel_entry {
+#define CHUNK_SIZE 256
+
+struct channel {
 	int fd;
 	char *desc;
-	void (*on_read)(struct channel_entry *ch);
-	void (*free)(struct channel_entry *ch);
-	struct channel_entry *next;
+	size_t buf_max;
+	size_t buf_cur;
+	int done;
+	char buf[CHUNK_SIZE * 16];
 };
 
-void channel_close(struct channel_entry *ch);
-int channel_server_start(const char *node, const char *service, void (*client_on_read)(struct channel_entry *ch), struct channel_entry *(*client_alloc)(void), void (*client_free)(struct channel_entry *ch));
-void channel_loop(void);
+void channel_init(struct channel *ch, int fd, const char *desc);
+void channel_done(struct channel *ch);
+void channel_close(struct channel *ch);
+int channel_fill(struct channel *ch);
+int channel_write(struct channel *ch, const void *buf, size_t count);
+void channel_printf(struct channel *ch, const char *fmt, ...);
 #endif

@@ -15,7 +15,6 @@
  */
 #ifndef HTTPD_H
 #define HTTPD_H
-void httpd_on_read(struct channel_entry *ch);
-struct channel_entry *httpd_alloc(void);
-void httpd_free(struct channel_entry *ch);
+int httpd_start(const char *node, const char *service);
+int httpd_loop(void);
 #endif

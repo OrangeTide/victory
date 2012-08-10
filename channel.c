@@ -17,237 +17,96 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <stdbool.h>
+#include <stdarg.h>
 #include <unistd.h>
-#include <sys/types.h>
-#include <sys/socket.h>
-#include <netdb.h>
-#include <sys/select.h>
-#include "container_of.h"
+#include "httpparser.h"
 #include "channel.h"
 
-struct server {
-	void (*client_on_read)(struct channel_entry *ch); // TODO: optoinally handle as part of client_alloc?
-	struct channel_entry *(*client_alloc)(void);
-	void (*client_free)(struct channel_entry *ch);
-	struct channel_entry channel;
-};
-
-static int channel_count; /* used to terminate channel_loop() */
-static struct channel_entry **channels;
-static unsigned max_channels;
-static fd_set channel_fdset;
-
-/******/
-
-static void grow(void *ptr, unsigned *max, unsigned min, size_t elem)
+static size_t buf_check(size_t *buf_max, size_t buf_cur, size_t count)
 {
-	size_t old = *max * elem;
+	size_t max = *buf_max;
 
-	if (min <= old)
-		return;
-
-	min += sizeof(intptr_t);
-	min--;
-	min |= min >> 1;
-	min |= min >> 2;
-	min |= min >> 4;
-	min |= min >> 8;
-	min |= min >> 16;
-	min++;
-	min -= sizeof(intptr_t);
-	*max = min;
-#ifndef NDEBUG
-	fprintf(stderr, "realloc from %zd to %d\n", old, min);
-#endif
-	assert(old <= min);
-	*(char**)ptr = realloc(*(char**)ptr, min * elem);
-	assert(*(void**)ptr != NULL);
-	memset(*(char**)ptr + old, 0, (min - old) * elem);
-	assert((intptr_t)*(void**)ptr >= 4096);
+	// TODO: we could grow the buf
+	assert(buf_cur <= max);
+	return (buf_cur + count < max) ? count : max - buf_cur;
 }
 
-/******/
-
-static void channel_ready(struct channel_entry *ch)
+static void buf_commit(size_t buf_max, size_t *buf_cur, size_t count)
 {
-	assert(ch != NULL);
-	FD_SET(ch->fd, &channel_fdset);
+	assert((*buf_cur) + count <= buf_max);
+	(*buf_cur) += count;
 }
 
-static void channel_not_ready(struct channel_entry *ch)
+void channel_init(struct channel *ch, int fd, const char *desc)
 {
-	assert(ch != NULL);
-	FD_CLR(ch->fd, &channel_fdset);
-}
-
-static void channel_add_entry(int fd, struct channel_entry *ch)
-{
-	assert(ch != NULL);
-	assert(fd >= 0);
-	fprintf(stderr, "%s():fd=%d ch=%p desc=\"%s\"\n",
-		__func__, fd, ch, ch->desc);
-	grow(&channels, &max_channels, fd + 1, sizeof(*channels));
-	assert(channels[fd] == NULL); /* must not be used */
-	channels[fd] = ch;
+	memset(ch, 0, sizeof(*ch));
+	ch->buf_max = sizeof(ch->buf);
+	ch->done = 0;
 	ch->fd = fd;
-	channel_ready(ch);
-	channel_count++;
+	ch->desc = desc ? strdup(desc) : NULL;
 }
 
-static void channel_remove_entry(struct channel_entry *ch)
+void channel_done(struct channel *ch)
 {
-	int fd = ch->fd;
-
-	channel_count--;
-	channel_not_ready(ch);
-	channels[fd] = NULL;
-	if (ch->free)
-		ch->free(ch);
-	else
-		free(ch);
+	ch->done = 1;
 }
 
-void channel_close(struct channel_entry *ch)
-{
-	int fd = ch->fd;
-
-	close(fd);
-	channel_remove_entry(ch);
-}
-
-static void make_name(char *buf, size_t buflen, const struct sockaddr *sa, socklen_t salen)
-{
-	char hostbuf[64], servbuf[32];
-
-	getnameinfo(sa, salen, hostbuf, sizeof(hostbuf), servbuf, sizeof(servbuf), NI_NUMERICHOST | NI_NUMERICSERV);
-	snprintf(buf, buflen, "%s:%s", hostbuf, servbuf);
-	// TODO: return a value
-}
-
-static void channel_freedata(struct channel_entry *ch)
+void channel_close(struct channel *ch)
 {
 	if (!ch)
 		return;
+	if (close(ch->fd))
+		perror(ch->desc);
+	ch->fd = -1;
 	free(ch->desc);
+	ch->desc = NULL;
 }
 
-static void server_free(struct channel_entry *ch)
+int channel_fill(struct channel *ch)
 {
-	struct server *serv = container_of(ch, struct server, channel);
+	ssize_t res;
+	size_t count;
 
-	channel_freedata(ch);
-	free(serv);
-}
-
-static void server_on_read(struct channel_entry *ch)
-{
-	struct server *serv = container_of(ch, struct server, channel);
-	int fd = ch->fd;
-	struct sockaddr_storage addr;
-	socklen_t addrlen = sizeof(addr);
-	int newfd;
-	char desc[64];
-	struct channel_entry *newch;
-
-	newfd = accept(fd, (struct sockaddr*)&addr, &addrlen);
-	if (newfd < 0) {
-		perror("accept()");
-		return;
-	}
-
-	make_name(desc, sizeof(desc), (struct sockaddr*)&addr, addrlen);
-	if (serv->client_alloc)
-		newch = serv->client_alloc();
-	else
-		newch = calloc(1, sizeof(newch));
-	newch->desc = strdup(desc);
-	newch->on_read = serv->client_on_read;
-	newch->free = serv->client_free;
-	channel_add_entry(newfd, newch);
-}
-
-int channel_server_start(const char *node, const char *service,
-	void (*client_on_read)(struct channel_entry *ch),
-	struct channel_entry *(*client_alloc)(void),
-	void (*client_free)(struct channel_entry *ch))
-{
-	struct addrinfo hints = {
-		.ai_flags = AI_NUMERICHOST | AI_PASSIVE,
-		.ai_family = AF_INET,
-		.ai_socktype = SOCK_STREAM,
-		.ai_protocol = 0, // TODO
-		.ai_next = NULL,
-	};
-	struct addrinfo *res, *cur;
-	int e;
-	char desc[64];
-
-	e = getaddrinfo(node, service, &hints, &res);
-	if (e) {
-		fprintf(stderr, "Error:%s\n", gai_strerror(e));
+	count = buf_check(&ch->buf_max, ch->buf_cur, CHUNK_SIZE);
+	assert(count != 0);
+	res = read(ch->fd, ch->buf + ch->buf_cur, count);
+	fprintf(stderr, "%s:read %zd bytes (asked for %zd bytes)\n",
+		ch->desc, res, count);
+	fprintf(stderr, "%s:cur=%zd max=%zd\n", ch->desc, ch->buf_cur, ch->buf_max);
+	if (res <= 0) {
+		if (res < 0)
+			perror(ch->desc);
 		return -1;
 	}
-	for (cur = res; cur; cur = cur->ai_next) {
-		int fd;
-		struct server *serv;
-		struct channel_entry *ch;
+	buf_commit(ch->buf_max, &ch->buf_cur, res);
+	return 1;
 
-		fd = socket(cur->ai_family, cur->ai_socktype, cur->ai_protocol);
-		if (fd < 0) {
-			perror("socket()");
-			goto fail_and_free;
-		}
-		e = bind(fd, cur->ai_addr, cur->ai_addrlen);
-		if (e) {
-			perror("bind()");
-			goto fail_and_free;
-		}
-		e = listen(fd, 6);
-		make_name(desc, sizeof(desc), cur->ai_addr, cur->ai_addrlen);
-		serv = calloc(1, sizeof(*serv));
-		serv->client_on_read = client_on_read;
-		serv->client_alloc = client_alloc;
-		serv->client_free = client_free;
-		ch = &serv->channel;
-		ch->desc = strdup(desc);
-		ch->on_read = server_on_read;
-		ch->free = server_free;
-		channel_add_entry(fd, ch);
-		channel_ready(ch);
-	}
-	freeaddrinfo(res);
-	return 0;
-fail_and_free:
-	freeaddrinfo(res);
-	return -1;
 }
 
-void channel_loop(void)
+int channel_write(struct channel *ch, const void *buf, size_t count)
 {
-	fd_set rfds;
-	int cnt;
-	unsigned i;
-
-	while (channel_count > 0) {
-		rfds = channel_fdset;
-		cnt = select(max_channels, &rfds, NULL, NULL, NULL);
-		if (cnt < 0) {
-			perror("select()");
-			break;
+	while (count > 0) {
+		ssize_t res = write(ch->fd, buf, count);
+		if (res < 0) {
+			perror(ch->desc);
+			// channel_close(ch);
+			// TODO: longjmp out of here
+			return res;
 		}
-
-		for (i = 0; cnt && i < max_channels; i++) {
-			struct channel_entry *ch = channels[i];
-
-			if (ch && FD_ISSET(i, &rfds)) {
-				ch->on_read(ch);
-			}
-			if (FD_ISSET(i, &rfds))
-				cnt--;
-		}
-
-		if (cnt)
-			fprintf(stderr, "items pending...\n");
+		count -= res;
+		buf += res;
 	}
+
+	return 0;
+}
+
+void channel_printf(struct channel *ch, const char *fmt, ...)
+{
+	va_list ap;
+	char buf[128];
+
+	va_start(ap, fmt);
+	vsnprintf(buf, sizeof(buf), fmt, ap);
+	va_end(ap);
+	channel_write(ch, buf, strlen(buf));
 }

@@ -19,7 +19,7 @@
 #include "httpparser.h"
 
 enum state {
-	S_REQUESTLINE_METHOD = 1000,
+	S_REQUESTLINE_METHOD = 0,
 	S_REQUESTLINE_URI_FIRSTCHAR,
 	S_REQUESTLINE_URI,
 	S_REQUESTLINE_HTTPVERSION,
@@ -31,19 +31,6 @@ enum state {
 	S_REQUESTHEADER_EOL,
 	S_REQUESTHEADER_BLANKLINE,
 	S_DATA,
-};
-
-struct httpparser {
-	enum state state;
-	unsigned debug_ofs;
-	char tok[4096];
-	unsigned cur_tok;
-	unsigned second_tok; /* offset of second token */
-	void *p;
-	void (*report_method)(void *p, const char *method, const char *uri);
-	void (*report_field)(void *p, const char *name, const char *value);
-	void (*report_headerfinish)(void *p);
-	void (*report_data)(void *p, size_t len, const void *data);
 };
 
 static inline int tok_add(char *buf, unsigned *cur, unsigned max, char ch)
@@ -61,45 +48,35 @@ static inline void tok_rewind(unsigned *cur)
 	*cur = 0;
 }
 
-void httpparser_reset(struct httpparser *hp)
+static int process_header(struct httpparser *hp,
+	const char *name, const char *value)
 {
-	hp->state = S_REQUESTLINE_METHOD;
-	tok_rewind(&hp->cur_tok);
-	hp->debug_ofs = 0;
+#if 0
+	if (!strcmp(name, "Content-Length")) {
+		char *endptr;
+		long long len = strtoll(value, &endptr, 10)
+
+		if (*endptr) /* parse error */
+			return -1;
+		hp->content_length_remaining = len;
+	}
+#endif
+	return 0;
 }
 
-struct httpparser *httpparser_create(void *p,
+int httpparser(struct httpparser *hp, const char *buf, size_t len, void *p,
 	void (*report_method)(void *p, const char *method, const char *uri),
-	void (*report_field)(void *p, const char *name, const char *value),
+	void (*report_header)(void *p, const char *name, const char *value),
 	void (*report_headerfinish)(void *p),
 	void (*report_data)(void *p, size_t len, const void *data))
-{
-	struct httpparser *hp;
-
-	hp = calloc(1, sizeof(*hp));
-	hp->p = p;
-	hp->report_method = report_method;
-	hp->report_field = report_field;
-	hp->report_headerfinish = report_headerfinish;
-	hp->report_data = report_data;
-	httpparser_reset(hp);
-	return hp;
-}
-
-void httpparser_destroy(struct httpparser *hp)
-{
-	free(hp);
-}
-
-int httpparser(struct httpparser *hp, const char *buf, size_t len)
 {
 	while (len) {
 		char ch = *buf;
 		const enum state state = hp->state;
 
 		if (state == S_DATA) {
-			if (hp->report_data)
-				hp->report_data(hp->p, len, buf);
+			if (report_data)
+				report_data(p, len, buf);
 			fprintf(stderr, "DATA: len=%zd\n", len);
 			return 0;
 		}
@@ -131,8 +108,8 @@ int httpparser(struct httpparser *hp, const char *buf, size_t len)
 			if (ch == ' ') {
 				if (tok_add(hp->tok, &hp->cur_tok, sizeof(hp->tok), 0))
 					goto buffer_overflow;
-				if (hp->report_method)
-					hp->report_method(hp->p, hp->tok, hp->tok + hp->second_tok);
+				if (report_method)
+					report_method(p, hp->tok, hp->tok + hp->second_tok);
 				tok_rewind(&hp->cur_tok);
 				hp->state = S_REQUESTLINE_HTTPVERSION;
 			} else if (ch == '\r') {
@@ -182,9 +159,9 @@ int httpparser(struct httpparser *hp, const char *buf, size_t len)
 			break;
 		case S_REQUESTHEADER_FIELDVALUE_FIRSTCHAR:
 			if (ch == '\r') {
-				/* empty field */
-				if (hp->report_field)
-					hp->report_field(hp->p, hp->tok, "");
+				/* empty header */
+				if (report_header)
+					report_header(p, hp->tok, "");
 			} else if (ch == '\n') {
 				goto terrible_error;
 			} else if (isspace(ch)) {
@@ -200,8 +177,10 @@ int httpparser(struct httpparser *hp, const char *buf, size_t len)
 			if (ch == '\r') {
 				if (tok_add(hp->tok, &hp->cur_tok, sizeof(hp->tok), 0))
 					goto buffer_overflow;
-				if (hp->report_field)
-					hp->report_field(hp->p, hp->tok, hp->tok + hp->second_tok);
+				if (process_header(hp, hp->tok, hp->tok + hp->second_tok))
+					goto terrible_error;
+				if (report_header)
+					report_header(p, hp->tok, hp->tok + hp->second_tok);
 				hp->state = S_REQUESTHEADER_EOL;
 			} else if (ch == '\n') {
 				goto terrible_error;
@@ -219,8 +198,8 @@ int httpparser(struct httpparser *hp, const char *buf, size_t len)
 		case S_REQUESTHEADER_BLANKLINE:
 			if (ch != '\n')
 				goto terrible_error;
-			if (hp->report_headerfinish)
-				hp->report_headerfinish(hp->p);
+			if (report_headerfinish)
+				report_headerfinish(p);
 			hp->state = S_DATA;
 			break;
 		}

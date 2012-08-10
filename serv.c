@@ -14,15 +14,14 @@
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
 #include <stddef.h>
-#include "channel.h"
 #include "httpd.h"
 #include "daemonize.h"
 
 int main()
 {
-	channel_server_start(NULL, "8080",
-		httpd_on_read, httpd_alloc, httpd_free);
-	channel_loop();
+	if (httpd_start(NULL, "8080"))
+		return 1;
+	httpd_loop();
 	// daemonize();
 	return 0;
 }

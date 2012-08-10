@@ -47,7 +47,7 @@ static void on_method(void *p, const char *method, const char *uri)
 	printf("%p:method=\"%s\" uri=\"%s\"\n", p, method, uri);
 }
 
-static void on_field(void *p, const char *name, const char *value)
+static void on_header(void *p, const char *name, const char *value)
 {
 	printf("%p:name=\"%s\" value=\"%s\"\n", p, name, value);
 }
@@ -64,13 +64,15 @@ static void on_data(void *p, size_t len, const void *data)
 
 int main()
 {
-	struct httpparser *hp;
+	struct httpparser hp;
 
-	hp = httpparser_create(NULL, on_method, on_field, on_headerfinish, on_data);
-	httpparser(hp, testdata1, testdata1_len);
-	httpparser_reset(hp);
-	httpparser(hp, testdata2, testdata2_len);
-	httpparser_destroy(hp);
+	httpparser_init(&hp);
+	httpparser(&hp, testdata1, testdata1_len, NULL, on_method, on_header,
+		on_headerfinish, on_data);
+
+	httpparser_init(&hp);
+	httpparser(&hp, testdata2, testdata2_len, NULL, on_method, on_header,
+		on_headerfinish, on_data);
 	return 0;
 }
 
