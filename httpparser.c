@@ -16,6 +16,7 @@
 #include <stdio.h>
 #include <ctype.h>
 #include <stdlib.h>
+#include "logger.h"
 #include "httpparser.h"
 
 enum state {
@@ -67,7 +68,7 @@ static int process_header(struct httpparser *hp,
 int httpparser(struct httpparser *hp, const char *buf, size_t len, void *p,
 	void (*report_method)(void *p, const char *method, const char *uri),
 	void (*report_header)(void *p, const char *name, const char *value),
-	void (*report_headerfinish)(void *p),
+	void (*report_header_done)(void *p),
 	void (*report_data)(void *p, size_t len, const void *data))
 {
 	while (len) {
@@ -77,7 +78,7 @@ int httpparser(struct httpparser *hp, const char *buf, size_t len, void *p,
 		if (state == S_DATA) {
 			if (report_data)
 				report_data(p, len, buf);
-			fprintf(stderr, "DATA: len=%zd\n", len);
+			Debug("DATA: len=%zd\n", len);
 			return 0;
 		}
 		hp->debug_ofs++;
@@ -198,20 +199,21 @@ int httpparser(struct httpparser *hp, const char *buf, size_t len, void *p,
 		case S_REQUESTHEADER_BLANKLINE:
 			if (ch != '\n')
 				goto terrible_error;
-			if (report_headerfinish)
-				report_headerfinish(p);
+			if (report_header_done)
+				report_header_done(p);
 			hp->state = S_DATA;
 			break;
 		}
 	}
 	return 0;
 terrible_error:
-	fprintf(stderr, "error: some terrible error occured (cur=%d)\n", hp->debug_ofs);
+	Error("some terrible error occured (cur=%d)\n", hp->debug_ofs);
 	return -1;
 buffer_overflow:
-	fprintf(stderr, "error: buffer overflow (cur=%d)\n", hp->debug_ofs);
-	fprintf(stderr, "\"%.*s\"\n", hp->cur_tok, hp->tok);
+	Error("buffer overflow (cur=%d)\n", hp->debug_ofs);
+	Debug("\"%.*s\"\n", hp->cur_tok, hp->tok);
 	if (hp->second_tok < hp->cur_tok)
-		fprintf(stderr, "\"%.*s\"\n", hp->cur_tok - hp->second_tok, hp->tok + hp->second_tok);
+		Debug("\"%.*s\"\n", hp->cur_tok - hp->second_tok,
+			hp->tok + hp->second_tok);
 	return -1;
 }

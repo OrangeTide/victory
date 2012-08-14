@@ -19,6 +19,7 @@
 #include <string.h>
 #include <stdarg.h>
 #include <unistd.h>
+#include "logger.h"
 #include "httpparser.h"
 #include "channel.h"
 
@@ -55,8 +56,9 @@ void channel_close(struct channel *ch)
 {
 	if (!ch)
 		return;
-	if (close(ch->fd))
-		perror(ch->desc);
+	if (ch->fd != -1)
+		if (close(ch->fd))
+			perror(ch->desc);
 	ch->fd = -1;
 	free(ch->desc);
 	ch->desc = NULL;
@@ -70,9 +72,9 @@ int channel_fill(struct channel *ch)
 	count = buf_check(&ch->buf_max, ch->buf_cur, CHUNK_SIZE);
 	assert(count != 0);
 	res = read(ch->fd, ch->buf + ch->buf_cur, count);
-	fprintf(stderr, "%s:read %zd bytes (asked for %zd bytes)\n",
+	Debug("%s:read %zd bytes (asked for %zd bytes)\n",
 		ch->desc, res, count);
-	fprintf(stderr, "%s:cur=%zd max=%zd\n", ch->desc, ch->buf_cur, ch->buf_max);
+	Debug("%s:cur=%zd max=%zd\n", ch->desc, ch->buf_cur, ch->buf_max);
 	if (res <= 0) {
 		if (res < 0)
 			perror(ch->desc);
@@ -86,11 +88,14 @@ int channel_fill(struct channel *ch)
 int channel_write(struct channel *ch, const void *buf, size_t count)
 {
 	while (count > 0) {
-		ssize_t res = write(ch->fd, buf, count);
+		ssize_t res;
+
+		if (ch->done)
+			return -1;
+		res = write(ch->fd, buf, count);
 		if (res < 0) {
 			perror(ch->desc);
-			// channel_close(ch);
-			// TODO: longjmp out of here
+			channel_done(ch);
 			return res;
 		}
 		count -= res;

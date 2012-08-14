@@ -15,6 +15,7 @@
  */
 #ifndef HTTPD_H
 #define HTTPD_H
+int httpd_poolsize(int newsize);
 int httpd_start(const char *node, const char *service);
 int httpd_loop(void);
 #endif

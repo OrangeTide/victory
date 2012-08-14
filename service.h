@@ -13,45 +13,18 @@
  * ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
+#ifndef SERVICE_H
+#define SERVICE_H
 #include <stddef.h>
-#include "httpd.h"
-#include "daemonize.h"
-#include "service.h"
 
-static void *app_start(const char *method, const char *uri)
-{
-}
+struct service {
+	void *(*app_start)(const char *method, const char *uri);
+	void (*app_free)(void *app_ptr);
+	void (*on_header)(void *app_ptr, const char *name, const char *value);
+	void (*on_header_done)(void *app_ptr);
+	void (*on_data)(void *app_ptr, size_t len, const void *data);
+};
 
-static void app_free(void *app_ptr)
-{
-}
-
-static void on_header(void *app_ptr, const char *name, const char *value)
-{
-}
-
-static void on_header_done(void *app_ptr)
-{
-}
-
-static void on_data(void *app_ptr, size_t len, const void *data)
-{
-}
-
-
-int main()
-{
-
-	const struct service myapp = {
-		app_start, app_free, on_header, on_header_done, on_data,
-	};
-
-	service_register("/*", &myapp);
-
-	httpd_poolsize(100);
-	if (httpd_start(NULL, "8080"))
-		return 1;
-	httpd_loop();
-	// daemonize();
-	return 0;
-}
+const struct service *service_find(const char *uri);
+int service_register(const char *uri_match, const struct service *service);
+#endif

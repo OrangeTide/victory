@@ -40,6 +40,6 @@ static inline void httpparser_init(struct httpparser *hp)
 int httpparser(struct httpparser *hp, const char *buf, size_t len, void *p,
 	void (*report_method)(void *p, const char *method, const char *uri),
 	void (*report_header)(void *p, const char *name, const char *value),
-	void (*report_headerfinish)(void *p),
+	void (*report_header_done)(void *p),
 	void (*report_data)(void *p, size_t len, const void *data));
 #endif

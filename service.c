@@ -13,45 +13,44 @@
  * ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
-#include <stddef.h>
-#include "httpd.h"
-#include "daemonize.h"
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <fnmatch.h>
 #include "service.h"
 
-static void *app_start(const char *method, const char *uri)
+struct service_entry {
+	struct service_entry *next;
+	const char *uri_match;
+	struct service service;
+};
+
+static struct service_entry *service_head;
+
+const struct service *service_find(const char *uri)
 {
+	struct service_entry *curr;
+
+	for (curr = service_head; curr; curr = curr->next) {
+		if (!fnmatch(curr->uri_match, uri, FNM_PATHNAME | FNM_NOESCAPE))
+			return &curr->service;
+	}
+	return NULL;
 }
 
-static void app_free(void *app_ptr)
+int service_register(const char *uri_match, const struct service *service)
 {
-}
+	struct service_entry *se;
 
-static void on_header(void *app_ptr, const char *name, const char *value)
-{
-}
+	se = calloc(1, sizeof(*se));
+	if (!se) {
+		perror(__func__);
+		return -1;
+	}
+	se->uri_match = strdup(uri_match);
+	se->service = *service;
+	se->next = service_head;
+	service_head = se;
 
-static void on_header_done(void *app_ptr)
-{
-}
-
-static void on_data(void *app_ptr, size_t len, const void *data)
-{
-}
-
-
-int main()
-{
-
-	const struct service myapp = {
-		app_start, app_free, on_header, on_header_done, on_data,
-	};
-
-	service_register("/*", &myapp);
-
-	httpd_poolsize(100);
-	if (httpd_start(NULL, "8080"))
-		return 1;
-	httpd_loop();
-	// daemonize();
 	return 0;
 }

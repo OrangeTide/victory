@@ -4,7 +4,7 @@ all ::
 .PHONY : all clean
 #
 all :: serv
-OBJS_serv := serv.o httpd.o httpparser.o channel.o daemonize.o
+OBJS_serv := serv.o httpd.o service.o httpparser.o channel.o daemonize.o
 clean :: ; $(RM) serv $(OBJS_serv)
 serv : $(OBJS_serv)
 serv : LDFLAGS += -pthread

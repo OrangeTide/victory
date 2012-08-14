@@ -19,26 +19,38 @@
 #include <string.h>
 #include <pthread.h>
 #include <netdb.h>
+#include <signal.h>
 #include <unistd.h>
+#include "logger.h"
 #include "httpd.h"
 #include "httpparser.h"
 #include "channel.h"
+#include "service.h"
+
+struct httpchannel {
+	struct channel channel;
+	struct httpparser hp;
+	const struct service *service;
+	void *app_ptr; // TODO: pthread_key_create() for clean-up
+};
+
+struct worker {
+	pthread_t th;
+	struct server *server;
+	struct httpchannel httpchannel;
+};
 
 struct server {
-	pthread_t *thread_pool;
+	struct worker *thread_pool;
 	unsigned num_thread_pool;
 	int fd;
 	struct server *next;
 	char *desc;
 };
 
-struct httpchannel {
-	struct channel channel;
-	struct httpparser hp;
-};
-
 static struct server *server_head;
-static const unsigned pool_size = 200;
+static unsigned pool_size = 5;
+static pthread_once_t httpd_init_once = PTHREAD_ONCE_INIT;
 
 static void grow(void *ptr, unsigned *max, unsigned min, size_t elem)
 {
@@ -57,9 +69,7 @@ static void grow(void *ptr, unsigned *max, unsigned min, size_t elem)
 	min++;
 	min -= sizeof(intptr_t);
 	*max = min;
-#ifndef NDEBUG
-	fprintf(stderr, "realloc from %zd to %d\n", old, min);
-#endif
+	Debug("realloc from %zd to %d\n", old, min);
 	assert(old <= min);
 	*(char**)ptr = realloc(*(char**)ptr, min * elem);
 	assert(*(void**)ptr != NULL);
@@ -67,11 +77,17 @@ static void grow(void *ptr, unsigned *max, unsigned min, size_t elem)
 	assert((intptr_t)*(void**)ptr >= 4096);
 }
 
-static void make_name(char *buf, size_t buflen, const struct sockaddr *sa, socklen_t salen)
+static void httpd_init(void)
+{
+}
+
+static void make_name(char *buf, size_t buflen,
+	const struct sockaddr *sa, socklen_t salen)
 {
 	char hostbuf[64], servbuf[32];
 
-	getnameinfo(sa, salen, hostbuf, sizeof(hostbuf), servbuf, sizeof(servbuf), NI_NUMERICHOST | NI_NUMERICSERV);
+	getnameinfo(sa, salen, hostbuf, sizeof(hostbuf), servbuf,
+		sizeof(servbuf), NI_NUMERICHOST | NI_NUMERICSERV);
 	snprintf(buf, buflen, "%s:%s", hostbuf, servbuf);
 	// TODO: return a value
 }
@@ -108,7 +124,7 @@ static void response(struct channel *ch, int status_code)
 	case 504: resp = resp504; resp_len = resp504_len; break;
 	case 505: resp = resp505; resp_len = resp505_len; break;
 	}
-	fprintf(stderr, "%s:status_code=%d\n", ch->desc, status_code);
+	Debug("%s:status_code=%d\n", ch->desc, status_code);
 	channel_write(ch, resp, resp_len);
 }
 
@@ -119,18 +135,40 @@ static void end_headers(struct channel *ch)
 
 static void on_method(void *p, const char *method, const char *uri)
 {
+	struct httpchannel *hc = p;
+	struct channel *ch = &hc->channel;
+	const struct service *serv;
+
 	// TODO: check method
 	// TODO: look up URI
+	serv = service_find(uri);
+	if (!serv) {
+		Error("%s:could not find URI path\n", ch->desc);
+		response(ch, 404);
+		// TODO: write headers
+		end_headers(ch);
+		channel_done(ch);
+		return;
+	}
+
+	Debug("%s:found service %p\n", ch->desc, serv);
+
+	hc->service = serv;
+	hc->app_ptr = serv->app_start(method, uri);
+	// TODO: check for error??
 }
 
 static void on_header(void *p, const char *name, const char *value)
 {
+	struct httpchannel *hc = p;
+	struct channel *ch = &hc->channel;
 	// TODO: process headers
 }
 
-static void on_headerfinish(void *p)
+static void on_header_done(void *p)
 {
-	struct channel *ch = p;
+	struct httpchannel *hc = p;
+	struct channel *ch = &hc->channel;
 	const char msg[] = "Hello World\r\n";
 
 	response(ch, 200);
@@ -152,15 +190,27 @@ static void httpd_process(struct httpchannel *hc)
 	struct channel *ch = &hc->channel;
 
 	while (!ch->done && channel_fill(ch) > 0) {
-		if (httpparser(&hc->hp, ch->buf, ch->buf_cur, ch, on_method,
-			on_header, on_headerfinish, on_data)) {
-			fprintf(stderr, "%s:parse failure\n", ch->desc);
+		if (httpparser(&hc->hp, ch->buf, ch->buf_cur, hc, on_method,
+			on_header, on_header_done, on_data)) {
+			Info("%s:parse failure\n", ch->desc);
 			response(ch, 500);
 			end_headers(ch);
 			break;
 		}
 		ch->buf_cur = 0; /* httpparser() consumes 100% of buffer */
 	}
+}
+
+static void httpchannel_cleanup(struct httpchannel *hc)
+{
+	channel_close(&hc->channel);
+}
+
+static void worker_cleanup(void *p)
+{
+	struct httpchannel *hc = p;
+
+	httpchannel_cleanup(hc);
 }
 
 static void httpchannel_init(struct httpchannel *hc, int fd, const char *desc)
@@ -177,10 +227,12 @@ static int server_accept(struct server *serv, struct httpchannel *hc)
 	char desc[64];
 
 	newfd = accept(serv->fd, (struct sockaddr*)&addr, &addrlen);
+	pthread_testcancel();
 	if (newfd < 0) {
 		perror("accept()");
 		return -1;
 	}
+
 	make_name(desc, sizeof(desc), (struct sockaddr*)&addr, addrlen);
 	httpchannel_init(hc, newfd, desc);
 	return 0;
@@ -188,16 +240,21 @@ static int server_accept(struct server *serv, struct httpchannel *hc)
 
 static void *worker_start(void *p)
 {
-	struct server *serv = p;
-	struct httpchannel hc;
+	struct worker *w = p;
+	struct server *serv = w->server;
+	struct httpchannel *hc = &w->httpchannel;
 
+	signal(SIGPIPE, SIG_IGN);
+	pthread_cleanup_push(worker_cleanup, hc);
 	while (1) {
-		if (server_accept(serv, &hc))
+		pthread_testcancel();
+		if (server_accept(serv, hc))
 			return NULL;
-		httpd_process(&hc);
-		fprintf(stderr, "%s:connection terminated\n", hc.channel.desc);
-		channel_close(&hc.channel);
+		httpd_process(hc);
+		Debug("%s:connection terminated\n", hc->channel.desc);
+		httpchannel_cleanup(hc);
 	}
+	pthread_cleanup_pop(1);
 	return NULL;
 }
 
@@ -210,23 +267,29 @@ static void resize_thread_pool(struct server *serv, unsigned new_size)
 	/* remove threads if we shrink */
 	// TODO: prefer idle/sleep threads
 	for (i = new_size; i < old_size; i++) {
-		e = pthread_cancel(serv->thread_pool[i]);
+		e = pthread_cancel(serv->thread_pool[i].th);
 		if (e) {
 			perror(serv->desc);
 			break;
 		}
 	}
-	grow(&serv->thread_pool, &serv->num_thread_pool, new_size, sizeof(*serv->thread_pool));
+	grow(&serv->thread_pool, &serv->num_thread_pool, new_size,
+		sizeof(*serv->thread_pool));
 	/* add threads if we grow */
 	for (i = old_size; i < new_size; i++) {
-		e = pthread_create(&serv->thread_pool[i], NULL, worker_start, serv);
+		struct worker *w = &serv->thread_pool[i];
+
+		w->server = serv;
+		e = pthread_create(&w->th, NULL, worker_start, w);
 		if (e) {
 			perror(serv->desc);
 			/* the list came up short */
 			serv->num_thread_pool = i;
+			Warning("limiting thread pool to %d\n",
+				serv->num_thread_pool);
 			break;
 		}
-		e = pthread_detach(serv->thread_pool[i]);
+		e = pthread_detach(w->th);
 		if (e) {
 			perror(serv->desc);
 			// TODO: handle the error
@@ -248,6 +311,12 @@ static void server_add_entry(int fd, const char *desc)
 	server_head = serv;
 }
 
+int httpd_poolsize(int newsize)
+{
+	pool_size = newsize;
+	return 0;
+}
+
 int httpd_start(const char *node, const char *service)
 {
 	struct addrinfo hints = {
@@ -263,15 +332,21 @@ int httpd_start(const char *node, const char *service)
 
 	e = getaddrinfo(node, service, &hints, &res);
 	if (e) {
-		fprintf(stderr, "Error:%s\n", gai_strerror(e));
+		Error("%s\n", gai_strerror(e));
 		return -1;
 	}
 	for (cur = res; cur; cur = cur->ai_next) {
 		int fd;
+		const int yes = 1;
 
 		fd = socket(cur->ai_family, cur->ai_socktype, cur->ai_protocol);
 		if (fd < 0) {
 			perror("socket()");
+			goto fail_and_free;
+		}
+		e = setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
+		if (e) {
+			perror("SO_REUSEADDR");
 			goto fail_and_free;
 		}
 		e = bind(fd, cur->ai_addr, cur->ai_addrlen);
@@ -296,7 +371,13 @@ fail_and_free:
 
 int httpd_loop(void)
 {
-	if (server_head)
-		worker_start(server_head); /* join the last thread pool */
+	pthread_once(&httpd_init_once, httpd_init);
+	if (server_head) {
+		struct worker w;
+
+		memset(&w, 0, sizeof(w));
+		w.server = server_head;
+		worker_start(&w); /* join the last thread pool */
+	}
 	return 0;
 }

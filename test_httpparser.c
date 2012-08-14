@@ -52,7 +52,7 @@ static void on_header(void *p, const char *name, const char *value)
 	printf("%p:name=\"%s\" value=\"%s\"\n", p, name, value);
 }
 
-static void on_headerfinish(void *p)
+static void on_header_done(void *p)
 {
 	printf("%p:HEADER DONE!\n", p);
 }
@@ -68,11 +68,11 @@ int main()
 
 	httpparser_init(&hp);
 	httpparser(&hp, testdata1, testdata1_len, NULL, on_method, on_header,
-		on_headerfinish, on_data);
+		on_header_done, on_data);
 
 	httpparser_init(&hp);
 	httpparser(&hp, testdata2, testdata2_len, NULL, on_method, on_header,
-		on_headerfinish, on_data);
+		on_header_done, on_data);
 	return 0;
 }
 
