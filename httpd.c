@@ -21,6 +21,7 @@
 #include <netdb.h>
 #include <signal.h>
 #include <unistd.h>
+#include <fcntl.h>
 #include "logger.h"
 #include "httpd.h"
 #include "httpparser.h"
@@ -232,6 +233,7 @@ static int server_accept(struct server *serv, struct httpchannel *hc)
 		perror("accept()");
 		return -1;
 	}
+	fcntl(newfd, F_SETFD, FD_CLOEXEC); /* a race, but better than nothing */
 
 	make_name(desc, sizeof(desc), (struct sockaddr*)&addr, addrlen);
 	httpchannel_init(hc, newfd, desc);
@@ -344,6 +346,7 @@ int httpd_start(const char *node, const char *service)
 			perror("socket()");
 			goto fail_and_free;
 		}
+		fcntl(fd, F_SETFD, FD_CLOEXEC); /* this is a race */
 		e = setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
 		if (e) {
 			perror("SO_REUSEADDR");

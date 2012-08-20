@@ -1,0 +1,3 @@
+"uri","module","args"
+"/","static_files","/var/www/"
+"/cgi-bin","cgibin"
