@@ -16,16 +16,21 @@
 #ifndef MODULE_H
 #define MODULE_H
 #include <stddef.h>
+#include "channel.h"
 
 struct module {
-	void *(*start)(const char *method, const char *uri);
+	char *desc;
+	void *(*start)(const char *method, const char *uri, const char *arg);
 	void (*free)(void *app_ptr);
-	void (*on_header)(void *app_ptr, const char *name, const char *value);
-	void (*on_header_done)(void *app_ptr);
-	void (*on_data)(void *app_ptr, size_t len, const void *data);
-	void *mod_ptr;
+	void (*on_header)(struct channel *ch, void *app_ptr, const char *name,
+		const char *value);
+	void (*on_header_done)(struct channel *ch, void *app_ptr);
+	void (*on_data)(struct channel *ch, void *app_ptr, size_t len,
+		const void *data);
 };
 
 const struct module *module_find(const char *modname);
 int module_register(const char *modname, const struct module *module);
+void *module_start(const struct module *module, const char *method,
+	const char *uri, const char *arg);
 #endif

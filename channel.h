@@ -15,6 +15,7 @@
  */
 #ifndef CHANNEL_H
 #define CHANNEL_H
+#include <stddef.h>
 
 #define CHUNK_SIZE 256
 

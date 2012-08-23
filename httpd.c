@@ -27,11 +27,12 @@
 #include "httpparser.h"
 #include "channel.h"
 #include "service.h"
+#include "module.h"
 
 struct httpchannel {
 	struct channel channel;
 	struct httpparser hp;
-	const struct service *service;
+	const struct module *module;
 	void *app_ptr; // TODO: pthread_key_create() for clean-up
 };
 
@@ -93,7 +94,7 @@ static void make_name(char *buf, size_t buflen,
 	// TODO: return a value
 }
 
-static void response(struct channel *ch, int status_code)
+void httpd_response(struct channel *ch, int status_code)
 {
 	const char resp200[] = "HTTP/1.1 200 OK\r\n";
 	const size_t resp200_len = sizeof(resp200) - 1;
@@ -129,7 +130,7 @@ static void response(struct channel *ch, int status_code)
 	channel_write(ch, resp, resp_len);
 }
 
-static void end_headers(struct channel *ch)
+void httpd_end_headers(struct channel *ch)
 {
 	channel_write(ch, "\r\n", 2);
 }
@@ -138,25 +139,16 @@ static void on_method(void *p, const char *method, const char *uri)
 {
 	struct httpchannel *hc = p;
 	struct channel *ch = &hc->channel;
-	const struct service *serv;
 
-	// TODO: check method
-	// TODO: look up URI
-	serv = service_find(uri);
-	if (!serv) {
-		Error("%s:could not find URI path\n", ch->desc);
-		response(ch, 404);
+	if (service_start(method, uri, &hc->module, &hc->app_ptr)) {
+		Error("%s:could not find service or start module\n", ch->desc);
+		httpd_response(ch, 404);
 		// TODO: write headers
-		end_headers(ch);
+		httpd_end_headers(ch);
 		channel_done(ch);
 		return;
 	}
-
-	Debug("%s:found service %p\n", ch->desc, serv);
-
-	hc->service = serv;
-	hc->app_ptr = serv->app_start(method, uri);
-	// TODO: check for error??
+	Info("%s:connected to service.\n", ch->desc);
 }
 
 static void on_header(void *p, const char *name, const char *value)
@@ -170,15 +162,16 @@ static void on_header_done(void *p)
 {
 	struct httpchannel *hc = p;
 	struct channel *ch = &hc->channel;
-	const char msg[] = "Hello World\r\n";
+	const struct module *mod = hc->module;
 
-	response(ch, 200);
-	// TODO: write headers
-	end_headers(ch);
-	// TODO: output file/stream/etc
-	channel_write(ch, msg, sizeof(msg) - 1);
-
-	channel_done(ch);
+	if (!mod || !mod->on_header_done) {
+		Error("%s:could not find service or start module\n", ch->desc);
+		httpd_response(ch, 501);
+		httpd_end_headers(ch);
+		channel_done(ch);
+		return;
+	}
+	mod->on_header_done(ch, hc->app_ptr);
 }
 
 static void on_data(void *p, size_t len, const void *data)
@@ -194,8 +187,8 @@ static void httpd_process(struct httpchannel *hc)
 		if (httpparser(&hc->hp, ch->buf, ch->buf_cur, hc, on_method,
 			on_header, on_header_done, on_data)) {
 			Info("%s:parse failure\n", ch->desc);
-			response(ch, 500);
-			end_headers(ch);
+			httpd_response(ch, 500);
+			httpd_end_headers(ch);
 			break;
 		}
 		ch->buf_cur = 0; /* httpparser() consumes 100% of buffer */
@@ -204,6 +197,7 @@ static void httpd_process(struct httpchannel *hc)
 
 static void httpchannel_cleanup(struct httpchannel *hc)
 {
+	// TODO: free app_ptr
 	channel_close(&hc->channel);
 }
 

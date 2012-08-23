@@ -15,7 +15,12 @@
  */
 #ifndef HTTPD_H
 #define HTTPD_H
+#include "channel.h"
+
 int httpd_poolsize(int newsize);
 int httpd_start(const char *node, const char *service);
 int httpd_loop(void);
+
+void httpd_response(struct channel *ch, int status_code);
+void httpd_end_headers(struct channel *ch);
 #endif

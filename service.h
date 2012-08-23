@@ -17,14 +17,13 @@
 #define SERVICE_H
 #include <stddef.h>
 
-struct service {
-	void *(*app_start)(const char *method, const char *uri);
-	void (*app_free)(void *app_ptr);
-	void (*on_header)(void *app_ptr, const char *name, const char *value);
-	void (*on_header_done)(void *app_ptr);
-	void (*on_data)(void *app_ptr, size_t len, const void *data);
-};
+struct service;
 
+const struct module *service_module(const struct service *service);
+const char *service_arg(const struct service *service);
 const struct service *service_find(const char *uri);
-int service_register(const char *uri_match, const struct service *service);
+int service_register(const char *uri_match, const struct module *module,
+	const char *arg);
+int service_start(const char *method, const char *uri,
+	const struct module **module, void **app_ptr);
 #endif
