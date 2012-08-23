@@ -38,12 +38,12 @@ static void buf_commit(size_t buf_max, size_t *buf_cur, size_t count)
 	(*buf_cur) += count;
 }
 
-void channel_init(struct channel *ch, int fd, const char *desc)
+void channel_init(struct channel *ch, struct net_socket sock, const char *desc)
 {
 	memset(ch, 0, sizeof(*ch));
 	ch->buf_max = sizeof(ch->buf);
 	ch->done = 0;
-	ch->fd = fd;
+	ch->sock = sock;
 	ch->desc = desc ? strdup(desc) : NULL;
 }
 
@@ -56,10 +56,10 @@ void channel_close(struct channel *ch)
 {
 	if (!ch)
 		return;
-	if (ch->fd != -1)
-		if (close(ch->fd))
+	if (ch->sock.fd != -1)
+		if (close(ch->sock.fd))
 			perror(ch->desc);
-	ch->fd = -1;
+	ch->sock.fd = -1;
 	free(ch->desc);
 	ch->desc = NULL;
 }
@@ -71,7 +71,7 @@ int channel_fill(struct channel *ch)
 
 	count = buf_check(&ch->buf_max, ch->buf_cur, CHUNK_SIZE);
 	assert(count != 0);
-	res = read(ch->fd, ch->buf + ch->buf_cur, count);
+	res = read(ch->sock.fd, ch->buf + ch->buf_cur, count);
 	Debug("%s:read %zd bytes (asked for %zd bytes)\n",
 		ch->desc, res, count);
 	Debug("%s:cur=%zd max=%zd\n", ch->desc, ch->buf_cur, ch->buf_max);
@@ -92,7 +92,7 @@ int channel_write(struct channel *ch, const void *buf, size_t count)
 
 		if (ch->done)
 			return -1;
-		res = write(ch->fd, buf, count);
+		res = write(ch->sock.fd, buf, count);
 		if (res < 0) {
 			perror(ch->desc);
 			channel_done(ch);

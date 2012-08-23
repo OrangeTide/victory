@@ -16,11 +16,12 @@
 #ifndef CHANNEL_H
 #define CHANNEL_H
 #include <stddef.h>
+#include "net.h"
 
 #define CHUNK_SIZE 256
 
 struct channel {
-	int fd;
+	struct net_socket sock;
 	char *desc;
 	size_t buf_max;
 	size_t buf_cur;
@@ -28,7 +29,7 @@ struct channel {
 	char buf[CHUNK_SIZE * 16];
 };
 
-void channel_init(struct channel *ch, int fd, const char *desc);
+void channel_init(struct channel *ch, struct net_socket sock, const char *desc);
 void channel_done(struct channel *ch);
 void channel_close(struct channel *ch);
 int channel_fill(struct channel *ch);

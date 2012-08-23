@@ -18,12 +18,11 @@
 #include <stdlib.h>
 #include <string.h>
 #include <pthread.h>
-#include <netdb.h>
 #include <signal.h>
 #include <unistd.h>
-#include <fcntl.h>
 #include "logger.h"
 #include "httpd.h"
+#include "net.h"
 #include "httpparser.h"
 #include "channel.h"
 #include "service.h"
@@ -45,7 +44,7 @@ struct worker {
 struct server {
 	struct worker *thread_pool;
 	unsigned num_thread_pool;
-	int fd;
+	struct net_listen listen_handle;
 	struct server *next;
 	char *desc;
 };
@@ -81,17 +80,6 @@ static void grow(void *ptr, unsigned *max, unsigned min, size_t elem)
 
 static void httpd_init(void)
 {
-}
-
-static void make_name(char *buf, size_t buflen,
-	const struct sockaddr *sa, socklen_t salen)
-{
-	char hostbuf[64], servbuf[32];
-
-	getnameinfo(sa, salen, hostbuf, sizeof(hostbuf), servbuf,
-		sizeof(servbuf), NI_NUMERICHOST | NI_NUMERICSERV);
-	snprintf(buf, buflen, "%s:%s", hostbuf, servbuf);
-	// TODO: return a value
 }
 
 void httpd_response(struct channel *ch, int status_code)
@@ -208,29 +196,21 @@ static void worker_cleanup(void *p)
 	httpchannel_cleanup(hc);
 }
 
-static void httpchannel_init(struct httpchannel *hc, int fd, const char *desc)
+static void httpchannel_init(struct httpchannel *hc, struct net_socket sock,
+	const char *desc)
 {
 	httpparser_init(&hc->hp);
-	channel_init(&hc->channel, fd, desc);
+	channel_init(&hc->channel, sock, desc);
 }
 
 static int server_accept(struct server *serv, struct httpchannel *hc)
 {
-	struct sockaddr_storage addr;
-	socklen_t addrlen = sizeof(addr);
-	int newfd;
 	char desc[64];
+	struct net_socket new_sock;
 
-	newfd = accept(serv->fd, (struct sockaddr*)&addr, &addrlen);
-	pthread_testcancel();
-	if (newfd < 0) {
-		perror("accept()");
+	if (net_accept(&serv->listen_handle, &new_sock, sizeof(desc), desc))
 		return -1;
-	}
-	fcntl(newfd, F_SETFD, FD_CLOEXEC); /* a race, but better than nothing */
-
-	make_name(desc, sizeof(desc), (struct sockaddr*)&addr, addrlen);
-	httpchannel_init(hc, newfd, desc);
+	httpchannel_init(hc, new_sock, desc);
 	return 0;
 }
 
@@ -295,12 +275,12 @@ static void resize_thread_pool(struct server *serv, unsigned new_size)
 
 }
 
-static void server_add_entry(int fd, const char *desc)
+static void server_add_entry(struct net_listen listen_handle, const char *desc)
 {
 	struct server *serv;
 
 	serv = calloc(1, sizeof(*serv));
-	serv->fd = fd;
+	serv->listen_handle = listen_handle;
 	serv->desc = strdup(desc);
 	resize_thread_pool(serv, pool_size);
 	serv->next = server_head;
@@ -315,55 +295,13 @@ int httpd_poolsize(int newsize)
 
 int httpd_start(const char *node, const char *service)
 {
-	struct addrinfo hints = {
-		.ai_flags = AI_NUMERICHOST | AI_PASSIVE,
-		.ai_family = AF_INET,
-		.ai_socktype = SOCK_STREAM,
-		.ai_protocol = 0,
-		.ai_next = NULL,
-	};
-	struct addrinfo *res, *cur;
-	int e;
 	char desc[64];
+	struct net_listen listen_handle;
 
-	e = getaddrinfo(node, service, &hints, &res);
-	if (e) {
-		Error("%s\n", gai_strerror(e));
+	if (net_listen(&listen_handle, node, service, sizeof(desc), desc))
 		return -1;
-	}
-	for (cur = res; cur; cur = cur->ai_next) {
-		int fd;
-		const int yes = 1;
-
-		fd = socket(cur->ai_family, cur->ai_socktype, cur->ai_protocol);
-		if (fd < 0) {
-			perror("socket()");
-			goto fail_and_free;
-		}
-		fcntl(fd, F_SETFD, FD_CLOEXEC); /* this is a race */
-		e = setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
-		if (e) {
-			perror("SO_REUSEADDR");
-			goto fail_and_free;
-		}
-		e = bind(fd, cur->ai_addr, cur->ai_addrlen);
-		if (e) {
-			perror("bind()");
-			goto fail_and_free;
-		}
-		e = listen(fd, SOMAXCONN);
-		if (e) {
-			perror("listen()");
-			goto fail_and_free;
-		}
-		make_name(desc, sizeof(desc), cur->ai_addr, cur->ai_addrlen);
-		server_add_entry(fd, desc);
-	}
-	freeaddrinfo(res);
+	server_add_entry(listen_handle, desc);
 	return 0;
-fail_and_free:
-	freeaddrinfo(res);
-	return -1;
 }
 
 int httpd_loop(void)
