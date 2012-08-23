@@ -1,4 +1,4 @@
-CFLAGS ?= -Wall -W -g
+CFLAGS ?= -Wall -W -g -DUSE_SYSLOG=1
 #
 all :: tests
 .PHONY : all clean tests

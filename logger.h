@@ -56,14 +56,23 @@
 #define ADD_SECOND_ARGUMENT(x, y, z) z, x, y
 #define INSERT_SECOND_ARGUMENT(x, y, z, ...) z, x, y, __VA_ARGS__
 
-#define Warning(...) printf("Warning:" __VA_ARGS__)
-#define Error(...) printf("Error:" __VA_ARGS__)
-#define Info(...) printf("Info:"  __VA_ARGS__)
+#ifdef USE_SYSLOG
+# include <syslog.h>
+# define Warning(...) syslog(LOG_WARNING, __VA_ARGS__)
+# define Error(...) syslog(LOG_ERR, __VA_ARGS__)
+# define Info(...) syslog(LOG_INFO,  __VA_ARGS__)
+#else
+# define Warning(...) fprintf(stderr, "Warning:" __VA_ARGS__)
+# define Error(...) fprintf(stderr, "Error:" __VA_ARGS__)
+# define Info(...) fprintf(stderr, "Info:"  __VA_ARGS__)
+#endif
 
+/* don't support Debug() output to syslog */
 #ifdef NDEBUG
 # define Debug(...) do { } while(0)
 #else
-# define Debug(...) printf("Debug:%s():%d:" \
+# define Debug(...) fprintf(stderr, "Debug:%s():%d:" \
 	PROVIDE_SECOND_ARGUMENT(__func__, __LINE__, __VA_ARGS__))
 #endif
+
 #endif

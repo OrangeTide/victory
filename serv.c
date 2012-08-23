@@ -118,8 +118,16 @@ failure:
 	return -1;
 }
 
-int main()
+int main(int argc, char *argv[])
 {
+#ifdef USE_SYSLOG
+	char *prog_name;
+
+	prog_name = strrchr(argv[0], '/');
+	if (!prog_name)
+		prog_name = argv[0];
+	openlog(prog_name, LOG_PERROR | LOG_PID, LOG_DAEMON);
+#endif
 
 	module_register("static_files", &mod_static_files);
 
