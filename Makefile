@@ -8,7 +8,7 @@ clean ::
 tests ::
 #
 OBJS_serv := serv.o httpd.o module.o service.o httpparser.o channel.o \
-	daemonize.o csv.o mod_static_files.o net.o
+	daemonize.o csv.o mod_static_files.o net.o env.o
 all :: serv
 clean :: ; $(RM) serv $(OBJS_serv)
 serv : $(OBJS_serv)
@@ -23,3 +23,8 @@ tests :: test_csv ; ./test_csv
 OBJS_test_csv := test_csv.o csv.o
 clean :: ; $(RM) test_csv $(OBJS_test_csv)
 test_csv : $(OBJS_test_csv)
+#
+tests :: test_env ; ./test_env
+OBJS_test_env := test_env.o env.o
+clean :: ; $(RM) test_env $(OBJS_test_env)
+test_env : $(OBJS_test_env)
