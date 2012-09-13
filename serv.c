@@ -25,6 +25,7 @@
 
 struct service_config_info {
 	unsigned current_row;
+	char host_match[256];
 	char uri_match[256];
 	const struct module *module;
 	char arg[256];
@@ -37,7 +38,8 @@ static void on_row_end(void *user_ptr, unsigned row)
 	if (row == 0)
 		return; /* ignore first row */
 	Debug("row=%d mod=%p arg=\"%s\"\n", row, info->module, info->arg);
-	service_register(info->uri_match, info->module, info->arg);
+	service_register(info->host_match, info->uri_match, info->module,
+		info->arg);
 }
 
 static int on_data(void *user_ptr, unsigned row, unsigned col,
@@ -61,14 +63,18 @@ static int on_data(void *user_ptr, unsigned row, unsigned col,
 		// TODO: support "enabled" as 0/1 or no/yes
 		break;
 	case 1:
-		snprintf(info->uri_match, sizeof(info->uri_match), "%.*s",
+		snprintf(info->host_match, sizeof(info->host_match), "%.*s",
 			(int)len, data);
 		break;
 	case 2:
+		snprintf(info->uri_match, sizeof(info->uri_match), "%.*s",
+			(int)len, data);
+		break;
+	case 3:
 		info->module = module_find(data);
 		Debug("module=%s (%p)\n", data, info->module);
 		break;
-	case 3:
+	case 4:
 		snprintf(info->arg, sizeof(info->arg), "%.*s", (int)len, data);
 		break;
 	default:
@@ -86,7 +92,7 @@ static int load_services(const char *filename)
 	char buf[6]; // TODO: make this bigger
 	size_t len;
 	struct csv csv;
-	struct service_config_info info = { -1, "", NULL, "" };
+	struct service_config_info info = { -1, "", "", NULL, "" };
 
 #if __GLIBC_PREREQ(2, 7)
 	f = fopen(filename, "rbe");

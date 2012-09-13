@@ -29,26 +29,33 @@ struct service {
 
 struct service_entry {
 	struct service_entry *next;
+	const char *host_match;
 	const char *uri_match;
 	struct service service;
 };
 
 static struct service_entry *service_head;
 
-const struct service *service_find(const char *uri)
+static int match_service(const struct service_entry *curr, const char *host, const char *uri)
+{
+	return !fnmatch(curr->host_match, host, FNM_PATHNAME | FNM_NOESCAPE) &&
+		!fnmatch(curr->uri_match, uri, FNM_PATHNAME | FNM_NOESCAPE);
+}
+
+const struct service *service_find(const char *host, const char *uri)
 {
 	struct service_entry *curr;
 
 	// TODO: make this some sort of prefix tree
 	for (curr = service_head; curr; curr = curr->next) {
-		if (!fnmatch(curr->uri_match, uri, FNM_PATHNAME | FNM_NOESCAPE))
+		if (match_service(curr, host, uri))
 			return &curr->service;
 	}
 	return NULL;
 }
 
-int service_register(const char *uri_match, const struct module *module,
-	const char *arg)
+int service_register(const char *host_match, const char *uri_match,
+	const struct module *module, const char *arg)
 {
 	struct service_entry *se;
 
@@ -57,6 +64,7 @@ int service_register(const char *uri_match, const struct module *module,
 		perror(__func__);
 		return -1;
 	}
+	se->host_match = strdup(host_match);
 	se->uri_match = strdup(uri_match);
 	se->service.module = module;
 	se->service.arg = arg ? strdup(arg) : NULL;
@@ -76,14 +84,14 @@ const char *service_arg(const struct service *service)
 	return service ? service->arg : NULL;
 }
 
-int service_start(const char *method, const char *uri,
-	const struct module **module, void **app_ptr)
+int service_start(const char *method, const char *host, const char *uri,
+	const struct module **module, struct data **app_data)
 {
 	const struct service *serv;
 	const struct module *mod;
 	const char *module_arg;
 
-	serv = service_find(uri);
+	serv = service_find(host, uri);
 	if (!serv) {
 		Error("%s:could not find URI path\n", uri);
 		return -1;
@@ -96,7 +104,7 @@ int service_start(const char *method, const char *uri,
 	}
 	module_arg = service_arg(serv);
 
-	*app_ptr = module_start(mod, method, uri, module_arg);
+	*app_data = module_start(mod, method, uri, module_arg);
 	*module = mod;
 	// TODO: check for error??
 	Info("%s:using module %s\n", uri, mod->desc);

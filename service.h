@@ -16,14 +16,15 @@
 #ifndef SERVICE_H
 #define SERVICE_H
 #include <stddef.h>
+#include "data.h"
 
 struct service;
 
 const struct module *service_module(const struct service *service);
 const char *service_arg(const struct service *service);
-const struct service *service_find(const char *uri);
-int service_register(const char *uri_match, const struct module *module,
-	const char *arg);
-int service_start(const char *method, const char *uri,
-	const struct module **module, void **app_ptr);
+const struct service *service_find(const char *host, const char *uri);
+int service_register(const char *host_match, const char *uri_match,
+	const struct module *module, const char *arg);
+int service_start(const char *method, const char *host, const char *uri,
+	const struct module **module, struct data **app_data);
 #endif

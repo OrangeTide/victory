@@ -2,17 +2,20 @@
 #include "module.h"
 #include "mod_static_files.h"
 
-static void *mod_start(const char *method, const char *uri, const char *arg)
-{
-	// TODO: allocate information necessary for this.
-	return NULL;
-}
-
-static void mod_free(void *app_ptr)
+static void mod_free(struct data *app_data)
 {
 }
 
-static void on_header_done(struct channel *ch, void *app_ptr,
+static struct data *mod_start(const char *method, const char *uri, const char *arg)
+{
+	// TODO: allocate this instead of using a static.
+	static struct data app_data;
+
+	app_data.free_data = mod_free;
+	return &app_data;
+}
+
+static void on_header_done(struct channel *ch, struct data *app_data,
 	struct env *headers)
 {
 	const char msg[] = "Hello World\r\n";
@@ -26,7 +29,7 @@ static void on_header_done(struct channel *ch, void *app_ptr,
 	channel_done(ch);
 }
 
-static void on_data(struct channel *ch, void *app_ptr, size_t len,
+static void on_data(struct channel *ch, struct data *app_data, size_t len,
 	const void *data)
 {
 }
@@ -34,7 +37,6 @@ static void on_data(struct channel *ch, void *app_ptr, size_t len,
 const struct module mod_static_files = {
 	.desc = __FILE__,
 	.start = mod_start,
-	.free = mod_free,
 	.on_header_done = on_header_done,
 	.on_data = on_data,
 };

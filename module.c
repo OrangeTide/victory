@@ -56,7 +56,7 @@ int module_register(const char *modname, const struct module *module)
 	return 0;
 }
 
-void *module_start(const struct module *module, const char *method,
+struct data *module_start(const struct module *module, const char *method,
 	const char *uri, const char *arg)
 {
 	return module && module->start ? module->start(method, uri, arg) : NULL;

@@ -36,7 +36,7 @@ struct httpchannel {
 	struct channel channel;
 	struct httpparser hp;
 	const struct module *module;
-	void *app_ptr; // TODO: pthread_key_create() for clean-up
+	struct data *app_data; // TODO: pthread_key_create() for clean-up
 	char method[HTTPD_METHOD_MAX];
 	char uri[HTTPD_URI_MAX];
 	struct env headers;
@@ -159,9 +159,19 @@ static void on_header_done(void *p)
 	struct httpchannel *hc = p;
 	struct channel *ch = &hc->channel;
 	const struct module *mod;
+	const char *host;
 
-	// TODO: check Host: as well
-	if (service_start(hc->method, hc->uri, &hc->module, &hc->app_ptr)) {
+	/* check host */
+	host = env_get(&hc->headers, "Host");
+	if (!host) {
+		httpd_response(ch, 400);
+		httpd_end_headers(ch);
+		channel_done(ch);
+		return;
+	}
+	// TODO: pass Host to service_start
+	if (service_start(hc->method, host, hc->uri,
+		&hc->module, &hc->app_data)) {
 		Error("%s:could not find service or start module\n", ch->desc);
 		httpd_response(ch, 404);
 		// TODO: write headers
@@ -180,7 +190,7 @@ static void on_header_done(void *p)
 		channel_done(ch);
 		return;
 	}
-	mod->on_header_done(ch, hc->app_ptr, &hc->headers);
+	mod->on_header_done(ch, hc->app_data, &hc->headers);
 }
 
 static void on_data(void *p, size_t len, const void *data)
@@ -206,7 +216,8 @@ static void httpd_process(struct httpchannel *hc)
 
 static void httpchannel_cleanup(struct httpchannel *hc)
 {
-	// TODO: free app_ptr
+	data_free(hc->app_data);
+	hc->app_data = NULL;
 	channel_close(&hc->channel);
 }
 

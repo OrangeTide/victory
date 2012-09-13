@@ -13,25 +13,16 @@
  * ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
-#ifndef MODULE_H
-#define MODULE_H
-#include <stddef.h>
-#include "channel.h"
-#include "env.h"
-#include "data.h"
+#ifndef DATA_H
+#define DATA_H
 
-struct module {
-	char *desc;
-	struct data *(*start)(const char *method, const char *uri,
-		const char *arg);
-	void (*on_header_done)(struct channel *ch, struct data *app_data,
-		struct env *headers);
-	void (*on_data)(struct channel *ch, struct data *app_data, size_t len,
-		const void *data);
+struct data {
+	void (*free_data)(struct data *);
 };
 
-const struct module *module_find(const char *modname);
-int module_register(const char *modname, const struct module *module);
-struct data *module_start(const struct module *module, const char *method,
-	const char *uri, const char *arg);
+static inline void data_free(struct data *d)
+{
+	if (d && d->free_data)
+		d->free_data(d);
+}
 #endif
