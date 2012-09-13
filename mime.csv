@@ -1,0 +1,5 @@
+"Content-Type","pattern"
+"application/zip","*.zip"
+"application/xml","*.xml"
+"text/html","*.html"
+"text/plain","*.txt"

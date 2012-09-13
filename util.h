@@ -13,7 +13,7 @@
  * ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
-#ifndef MOD_STATIC_FILES_H
-#include "module.h"
-extern const struct module mod_static_files;
+#ifndef UTIL_H
+#define UTIL_H
+const char *util_basename(const char *path);
 #endif

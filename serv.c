@@ -22,6 +22,7 @@
 #include "csv.h"
 #include "mod_static_files.h"
 #include "logger.h"
+#include "ext.h"
 
 struct service_config_info {
 	unsigned current_row;
@@ -138,6 +139,7 @@ int main(int argc, char *argv[])
 	module_register("static_files", &mod_static_files);
 
 	load_services("serv.csv");
+	ext_config_load("mime.csv");
 
 	httpd_poolsize(100);
 	if (httpd_start(NULL, "8080")) {

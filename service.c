@@ -38,8 +38,8 @@ static struct service_entry *service_head;
 
 static int match_service(const struct service_entry *curr, const char *host, const char *uri)
 {
-	return !fnmatch(curr->host_match, host, FNM_PATHNAME | FNM_NOESCAPE) &&
-		!fnmatch(curr->uri_match, uri, FNM_PATHNAME | FNM_NOESCAPE);
+	return !fnmatch(curr->host_match, host, FNM_NOESCAPE) &&
+		!fnmatch(curr->uri_match, uri, FNM_NOESCAPE);
 }
 
 const struct service *service_find(const char *host, const char *uri)
