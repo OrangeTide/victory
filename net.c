@@ -85,7 +85,7 @@ int net_accept(struct net_listen *listen_handle, struct net_socket *socket,
 		newfd = accept(listen_handle->fd,
 			(struct sockaddr*)&addr, &addrlen);
 		pthread_testcancel();
-	} while (newfd >= 0 || errno == EINTR);
+	} while (newfd < 0 && errno == EINTR);
 	if (newfd < 0) {
 		perror("accept()");
 		return -1;
