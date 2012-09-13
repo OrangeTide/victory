@@ -27,12 +27,19 @@
 #include "channel.h"
 #include "service.h"
 #include "module.h"
+#include "env.h"
+
+#define HTTPD_METHOD_MAX 16
+#define HTTPD_URI_MAX 512
 
 struct httpchannel {
 	struct channel channel;
 	struct httpparser hp;
 	const struct module *module;
 	void *app_ptr; // TODO: pthread_key_create() for clean-up
+	char method[HTTPD_METHOD_MAX];
+	char uri[HTTPD_URI_MAX];
+	struct env headers;
 };
 
 struct worker {
@@ -75,7 +82,6 @@ static void grow(void *ptr, unsigned *max, unsigned min, size_t elem)
 	*(char**)ptr = realloc(*(char**)ptr, min * elem);
 	assert(*(void**)ptr != NULL);
 	memset(*(char**)ptr + old, 0, (min - old) * elem);
-	assert((intptr_t)*(void**)ptr >= 4096);
 }
 
 static void httpd_init(void)
@@ -118,6 +124,14 @@ void httpd_response(struct channel *ch, int status_code)
 	channel_write(ch, resp, resp_len);
 }
 
+void httpd_header(struct channel *ch, const char *name, const char *value)
+{
+	channel_write(ch, name, strlen(name));
+	channel_write(ch, ": ", 2);
+	channel_write(ch, value, strlen(value));
+	channel_write(ch, "\r\n", 2);
+}
+
 void httpd_end_headers(struct channel *ch)
 {
 	channel_write(ch, "\r\n", 2);
@@ -128,7 +142,26 @@ static void on_method(void *p, const char *method, const char *uri)
 	struct httpchannel *hc = p;
 	struct channel *ch = &hc->channel;
 
-	if (service_start(method, uri, &hc->module, &hc->app_ptr)) {
+	snprintf(hc->method, sizeof(hc->method), "%s", method);
+	snprintf(hc->uri, sizeof(hc->uri), "%s", uri);
+}
+
+static void on_header(void *p, const char *name, const char *value)
+{
+	struct httpchannel *hc = p;
+	struct channel *ch = &hc->channel;
+
+	env_set(&hc->headers, name, value);
+}
+
+static void on_header_done(void *p)
+{
+	struct httpchannel *hc = p;
+	struct channel *ch = &hc->channel;
+	const struct module *mod;
+
+	// TODO: check Host: as well
+	if (service_start(hc->method, hc->uri, &hc->module, &hc->app_ptr)) {
 		Error("%s:could not find service or start module\n", ch->desc);
 		httpd_response(ch, 404);
 		// TODO: write headers
@@ -137,20 +170,8 @@ static void on_method(void *p, const char *method, const char *uri)
 		return;
 	}
 	Info("%s:connected to service.\n", ch->desc);
-}
 
-static void on_header(void *p, const char *name, const char *value)
-{
-	struct httpchannel *hc = p;
-	struct channel *ch = &hc->channel;
-	// TODO: process headers
-}
-
-static void on_header_done(void *p)
-{
-	struct httpchannel *hc = p;
-	struct channel *ch = &hc->channel;
-	const struct module *mod = hc->module;
+	mod = hc->module;
 
 	if (!mod || !mod->on_header_done) {
 		Error("%s:could not find service or start module\n", ch->desc);
@@ -159,7 +180,7 @@ static void on_header_done(void *p)
 		channel_done(ch);
 		return;
 	}
-	mod->on_header_done(ch, hc->app_ptr);
+	mod->on_header_done(ch, hc->app_ptr, &hc->headers);
 }
 
 static void on_data(void *p, size_t len, const void *data)
@@ -199,8 +220,10 @@ static void worker_cleanup(void *p)
 static void httpchannel_init(struct httpchannel *hc, struct net_socket sock,
 	const char *desc)
 {
+	memset(hc, 0, sizeof(*hc));
 	httpparser_init(&hc->hp);
 	channel_init(&hc->channel, sock, desc);
+	env_init(&hc->headers);
 }
 
 static int server_accept(struct server *serv, struct httpchannel *hc)

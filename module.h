@@ -17,14 +17,14 @@
 #define MODULE_H
 #include <stddef.h>
 #include "channel.h"
+#include "env.h"
 
 struct module {
 	char *desc;
 	void *(*start)(const char *method, const char *uri, const char *arg);
 	void (*free)(void *app_ptr);
-	void (*on_header)(struct channel *ch, void *app_ptr, const char *name,
-		const char *value);
-	void (*on_header_done)(struct channel *ch, void *app_ptr);
+	void (*on_header_done)(struct channel *ch, void *app_ptr,
+		struct env *headers);
 	void (*on_data)(struct channel *ch, void *app_ptr, size_t len,
 		const void *data);
 };

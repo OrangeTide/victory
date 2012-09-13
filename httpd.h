@@ -22,5 +22,6 @@ int httpd_start(const char *node, const char *service);
 int httpd_loop(void);
 
 void httpd_response(struct channel *ch, int status_code);
+void httpd_header(struct channel *ch, const char *name, const char *value);
 void httpd_end_headers(struct channel *ch);
 #endif
