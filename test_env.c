@@ -73,6 +73,25 @@ static int test(void)
 		}
 	}
 
+	/* start over */
+	env_init(&env);
+
+	/* try to overflow the buffers */
+	for (i = 0; i < sizeof(env.heap); i++) {
+		char name[64];
+		char value[64];
+		int e;
+
+		snprintf(name, sizeof(name), "name%u", i);
+		snprintf(value, sizeof(value), "value is %u", i);
+
+		e = env_set(&env, name, value);
+		if (e) {
+			fprintf(stderr, "%s:env_set() returned %d\n", __FILE__, e);
+			break;
+		}
+	}
+
 	return 0;
 }
 
