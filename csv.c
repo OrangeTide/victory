@@ -121,20 +121,23 @@ int csv_push(struct csv *csv, size_t len, const char *buf)
 			} else {
 				csv->state = CSV_S_FIELD;
 				buf_reset(csv);
-				buf_add(csv, ch);
+				if (buf_add(csv, ch))
+					goto buffer_overflow;
 			}
 			break;
 		case CSV_S_QUOTED:
 			if (ch == '"') {
 				csv->state = CSV_S_QUOTE_CHECK;
 			} else {
-				buf_add(csv, ch);
+				if (buf_add(csv, ch))
+					goto buffer_overflow;
 			}
 			break;
 		case CSV_S_QUOTE_CHECK:
 			if (ch == '"') {
 				csv->state = CSV_S_QUOTED;
-				buf_add(csv, ch);
+				if (buf_add(csv, ch))
+					goto buffer_overflow;
 			} else if (ch == ',') {
 				csv->state = CSV_S_0;
 				if (data_ready(csv))
@@ -155,7 +158,8 @@ int csv_push(struct csv *csv, size_t len, const char *buf)
 			break;
 		case CSV_S_FIELD:
 			if (ch == '"') {
-				buf_add(csv, ch);
+				if (buf_add(csv, ch))
+					goto buffer_overflow;
 			} else if (ch == ',') {
 				csv->state = CSV_S_0;
 				if (data_ready(csv))
@@ -171,7 +175,8 @@ int csv_push(struct csv *csv, size_t len, const char *buf)
 			} else if (ch == '\r') {
 				/* ignored */
 			} else {
-				buf_add(csv, ch);
+				if (buf_add(csv, ch))
+					goto buffer_overflow;
 			}
 			break;
 		}
@@ -182,9 +187,6 @@ parse_error:
 	return -1;
 buffer_overflow:
 	fprintf(stderr, "buffer overflow\n");
-	return -1;
-not_implemented:
-	fprintf(stderr, "not implemented\n");
 	return -1;
 }
 
