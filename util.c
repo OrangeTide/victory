@@ -24,3 +24,51 @@ const char *util_basename(const char *path)
 	else
 		return path;
 }
+
+int util_fixpath(char *dest, size_t dest_len, const char *path)
+{
+	int st = 0;
+	char *out = dest;
+	int absolute = path[0] == '/';
+	int prev_slash = 1; /* any seperator, either / or start of string. */
+
+	while (out < dest + dest_len) {
+		if (!*path) {
+			*out = 0;
+			return 0; /* success */
+		}
+		if (prev_slash && path[0] == '.' && path[1] == '.' &&
+			(path[2] == '/' || !path[2])) {
+
+			/* consume the "../" or "..\0" */
+			if (path[2] == '/')
+				path++;
+			path += 2;
+
+			/* TODO: back up out to previous dir */
+			while (out > dest) {
+				out--;
+				if (*out == '/')
+					break;
+			}
+
+			/* make sure relative paths stay relative */
+			if (absolute || out != dest)
+				*out++ = '/';
+		} else if (prev_slash && path[0] == '.' &&
+			(path[1] == '/' || !path[1])) {
+
+			/* ignore - just consume the data */
+			if (path[1] == '/')
+				path++;
+			path++;
+		} else {
+			prev_slash = *path == '/';
+			*out = *path;
+			out++;
+			path++;
+		}
+	}
+	return -1; /* overflow */
+}
+

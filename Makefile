@@ -28,3 +28,8 @@ tests :: test_env ; ./test_env
 OBJS_test_env := test_env.o env.o
 clean :: ; $(RM) test_env $(OBJS_test_env)
 test_env : $(OBJS_test_env)
+#
+tests :: test_util ; ./test_util
+OBJS_test_util := test_util.o util.o
+clean :: ; $(RM) test_util $(OBJS_test_util)
+test_util : $(OBJS_test_util)

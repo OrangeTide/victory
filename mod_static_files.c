@@ -54,29 +54,47 @@ static void mod_free(struct data *app_data)
 static int open_path(struct mod_static_file_info *info,
 	const char *base, const char *uri)
 {
-	char path[PATH_MAX];
 	int fd;
+	char path[PATH_MAX];
+	int e;
+	size_t base_len = strlen(base);
 
-	// TODO: filter ".." from uri
-	snprintf(path, sizeof(path), "%s/%s", base, uri);
-	// TODO: check results
-	Debug("Using path=%s\n", path);
+	/* fix up absolute paths */
+	while (uri[0] == '/')
+		uri++;
+
+	/* check that there is room for the string, plus an extra '/' */
+	if (base_len > sizeof(path) - 2)
+		return -1;
+	memcpy(path, base, base_len);
+
+	/* append a '/' if one is not found */
+	if (base_len && path[base_len - 1] != '/') {
+		path[base_len++] = '/';
+		path[base_len] = 0;
+	}
+
+	e = util_fixpath(path + base_len, sizeof(path) - base_len, uri);
+	if (e) {
+		Error("%s:buffer overflow prevented\n", uri);
+		return -1;
+	}
+
+	Debug("Using path=\"%s\" (%s/%s)\n", path, base, uri);
 
 	fd = open(path, O_RDONLY);
-	if (fd < 0) {
-		Error("%s:%s\n", path, strerror(errno));
-		return -1;
-	}
-
-	if (fstat(fd, &info->stat_buf)) {
-		Error("%s:%s\n", path, strerror(errno));
-		close(fd);
-		return -1;
-	}
-
+	if (fd < 0)
+		goto failure;
+	if (fstat(fd, &info->stat_buf))
+		goto close_and_fail;
 	info->fd = fd;
-	info->content_type = ext_content_type(path);
+	info->content_type = ext_content_type(uri);
 	return 0;
+close_and_fail:
+	close(fd);
+failure:
+	Error("%s:%s\n", path, strerror(errno));
+	return -1;
 }
 
 static struct data *mod_start(const char *method, const char *uri,

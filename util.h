@@ -16,4 +16,5 @@
 #ifndef UTIL_H
 #define UTIL_H
 const char *util_basename(const char *path);
+int util_fixpath(char *dest, size_t dest_len, const char *path);
 #endif
