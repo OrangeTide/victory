@@ -25,6 +25,8 @@
  */
 #ifndef DEBUG_H
 #define DEBUG_H
+# include <stdio.h>
+
 #define CONCAT(x, y) CONCAT_(x, y)
 #define CONCAT_(x, y) x##y
 

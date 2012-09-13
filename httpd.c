@@ -36,7 +36,7 @@ struct httpchannel {
 	struct channel channel;
 	struct httpparser hp;
 	const struct module *module;
-	struct data *app_data; // TODO: pthread_key_create() for clean-up
+	struct data *app_data;
 	char method[HTTPD_METHOD_MAX];
 	char uri[HTTPD_URI_MAX];
 	struct env headers;

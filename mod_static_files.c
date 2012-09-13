@@ -1,12 +1,16 @@
+#include "logger.h"
 #include "httpd.h"
 #include "module.h"
 #include "mod_static_files.h"
 
 static void mod_free(struct data *app_data)
 {
+	Debug("free %p\n", app_data);
+	// TODO: clean up the data structure
 }
 
-static struct data *mod_start(const char *method, const char *uri, const char *arg)
+static struct data *mod_start(const char *method, const char *uri,
+	const char *arg)
 {
 	// TODO: allocate this instead of using a static.
 	static struct data app_data;
