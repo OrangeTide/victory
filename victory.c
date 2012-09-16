@@ -17,6 +17,8 @@
 #include <ctype.h>
 #include <errno.h>
 #include <netdb.h>
+#include <pthread.h>
+#include <signal.h>
 #include <stdarg.h>
 #include <stdbool.h>
 #include <stdio.h>
@@ -28,6 +30,9 @@
 
 #define HT_RESPONSE_200 "HTTP/1.1 200 OK\r\n"
 #define HT_RESPONSE_400 "HTTP/1.1 400 Bad Request\r\n"
+
+#define sys_error() fprintf(stderr, "%s():%d:%s\n", \
+	__func__, __LINE__, strerror(errno));
 
 #define ht_response(ch, status) ch_puts((ch), HT_RESPONSE_##status)
 
@@ -61,7 +66,15 @@ struct headers_state {
 	unsigned state;
 };
 
+struct work_info {
+	pthread_t thr;
+	struct listen *li;
+	bool active;
+};
+
 static struct listen *listen_head;
+static struct work_info **work;
+static unsigned work_cur, work_max;
 
 static void ch_init(struct channel *ch, int fd)
 {
@@ -77,8 +90,15 @@ static int net_listen(int *fd, struct addrinfo *ai)
 
 	_fd = socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
 	if (_fd < 0) {
-		perror(__func__);
+		sys_error();
 		return -1;
+	}
+	/* disable IPv4-to-IPv6 mapping */
+	if (ai->ai_family == AF_INET6)  {
+		res = setsockopt(_fd, IPPROTO_IPV6, IPV6_V6ONLY,
+			&yes, sizeof(yes));
+		if (res)
+			goto error_and_close;
 	}
 	res = setsockopt(_fd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
 	if (res)
@@ -93,58 +113,43 @@ static int net_listen(int *fd, struct addrinfo *ai)
 		*fd = _fd;
 	return 0;
 error_and_close:
-	perror(__func__);
+	sys_error();
 	close(_fd);
 	return -1;
 }
 
-static void li_init(struct listen *li, int fd)
-{
-	li->fd = fd;
-
-	/* circular list */
-	li->next = li;
-	if (listen_head) {
-		li->next = listen_head;
-		listen_head->next = li;
-	}
-	listen_head = li;
-}
-
-static int add_listen(int fd)
+static int li_add(int fd)
 {
 	struct listen *li;
 
 	li = calloc(1, sizeof(*li));
 	if (!li) {
-		perror(__func__);
+		sys_error();
 		return -1;
 	}
 
-	li_init(li, fd);
+	li->fd = fd;
+	li->next = listen_head;
+	listen_head = li;
+
 	return 0;
 }
 
 static int ht_listen(const char *node, const char *service)
 {
-	struct addrinfo hints[2];
+	struct addrinfo hints;
 	struct addrinfo *res, *curr;
 	int e;
 	int ret = 0;
 
-	memset(hints, 0, sizeof(hints));
-	hints[0].ai_flags = AI_PASSIVE;
-	hints[0].ai_family = AF_INET;
-	hints[0].ai_protocol = 0;
-	hints[0].ai_socktype = SOCK_STREAM;
-	hints[0].ai_next = &hints[1];
-	hints[1].ai_flags = AI_PASSIVE;
-	hints[1].ai_family = AF_INET6;
-	hints[1].ai_protocol = 0;
-	hints[1].ai_socktype = SOCK_STREAM;
-	hints[1].ai_next = NULL;
+	memset(&hints, 0, sizeof(hints));
+	hints.ai_flags = AI_PASSIVE;
+	hints.ai_family = AF_UNSPEC;
+	hints.ai_protocol = 0;
+	hints.ai_socktype = SOCK_STREAM;
+	hints.ai_next = NULL;
 
-	e = getaddrinfo(node, service, hints, &res);
+	e = getaddrinfo(node, service, &hints, &res);
 	if (e) {
 		fprintf(stderr, "%s():%s\n", __func__, gai_strerror(e));
 		return -1;
@@ -154,16 +159,23 @@ static int ht_listen(const char *node, const char *service)
 		int fd;
 		char host[40], serv[16];
 
+		/* currently we only support IPv4 and IPv6 */
+		if (curr->ai_family != AF_INET && curr->ai_family != AF_INET6)
+			continue;
+
 		getnameinfo(curr->ai_addr, curr->ai_addrlen, host, sizeof(host),
 			serv, sizeof(serv), NI_NUMERICHOST | NI_NUMERICSERV);
 
-		if (net_listen(&fd, curr))
+		if (net_listen(&fd, curr)) {
+			fprintf(stderr, "%s():failed to add %s:%s\n", __func__,
+				host, serv);
 			ret = -1;
-		else if (add_listen(fd))
+		} else if (li_add(fd)) {
 			close(fd);
-		else
+		} else {
 			fprintf(stderr, "%s():listen on %s:%s\n", __func__,
 				host, serv);
+		}
 	}
 
 	freeaddrinfo(res);
@@ -181,7 +193,7 @@ static int ch_puts(struct channel *ch, const char *str)
 	do {
 		res = send(ch->fd, str + cur, len - cur, 0);
 		if (res < 0) {
-			perror(__func__);
+			sys_error();
 			break;
 		}
 		assert(res != 0);
@@ -213,7 +225,7 @@ static int net_accept(struct listen *li, struct channel *ch)
 		newfd = accept(li->fd, (struct sockaddr*)&ss, &ss_len);
 	} while (newfd < 0 && errno == EINTR);
 	if (newfd < 0) {
-		perror(__func__);
+		sys_error();
 		return -1;
 	}
 	ch_init(ch, newfd);
@@ -352,7 +364,7 @@ static int fill(struct channel *ch, struct buffer *bu)
 
 	if (res <= 0) {
 		if (res < 0)
-			perror(__func__);
+			sys_error();
 		ch_close(ch);
 		return -1;
 	}
@@ -633,25 +645,94 @@ static int ht_process(struct channel *ch)
 	return 0;
 }
 
-static void worker_loop(void *p)
+static void *worker_loop(void *p)
 {
-	struct listen *li = p;
+	struct work_info *wi = p;
 	struct channel ch;
 
-	while (li) {
-		if (net_accept(li, &ch))
+	while (wi->active) {
+		if (net_accept(wi->li, &ch))
 			break;
 		ht_process(&ch);
 		ch_close(&ch);
-		li = li->next;
 	}
+	return NULL;
+}
+
+static void wi_grow(unsigned count)
+{
+	unsigned new_cur = work_cur + count;
+
+	if (new_cur > work_max) {
+		if (!work_max)
+			work_max = 1;
+		while (work_max < new_cur)
+			work_max *= 2;
+		work = realloc(work, sizeof(*work) * work_max);
+	}
+	if (work_cur < new_cur) {
+		memset(work + work_cur, 0,
+			sizeof(*work) * (new_cur - work_cur));
+	}
+}
+
+static void wi_start(unsigned count)
+{
+	unsigned i;
+	struct listen *curr;
+	int e;
+
+	for (curr = listen_head; curr; curr = curr->next) {
+		wi_grow(count);
+		for (i = 0; i < count; i++) {
+			struct work_info *wi;
+
+			wi = calloc(1, sizeof(*wi));
+			wi->active = true;
+			wi->li = curr;
+			e = pthread_create(&wi->thr, NULL, worker_loop, wi);
+			if (e) {
+				sys_error();
+				free(wi);
+				break;
+			}
+			e = pthread_detach(wi->thr);
+			if (e) {
+				sys_error();
+				/* TODO: handle this error */
+			}
+			wi = NULL;
+			work[work_cur++] = wi;
+		}
+	}
+	printf("thread count at %d\n", work_cur);
+}
+
+static void main_loop(void)
+{
+	while (1) {
+		sigset_t set;
+		siginfo_t info;
+		int s;
+
+		/* TODO: handle HUP, INT, USR1, USR2, ... */
+		sigemptyset(&set);
+		s = sigwaitinfo(&set, &info);
+		if (s < 0) {
+			sys_error();
+			break;
+		}
+		printf("SIGNAL %d\n", s);
+	}
+
 }
 
 int main()
 {
 	if (ht_listen(NULL, "8080"))
 		return 1;
-	worker_loop(listen_head);
+	wi_start(100);
 
+	main_loop();
 	return 0;
 }
