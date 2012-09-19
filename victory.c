@@ -30,6 +30,8 @@
 
 #define HT_RESPONSE_200 "HTTP/1.1 200 OK\r\n"
 #define HT_RESPONSE_400 "HTTP/1.1 400 Bad Request\r\n"
+#define HT_RESPONSE_403 "HTTP/1.1 403 Forbidden\r\n"
+#define HT_RESPONSE_404 "HTTP/1.1 404 Not Found\r\n"
 
 #define sys_error() fprintf(stderr, "%s():%d:%s\n", \
 	__func__, __LINE__, strerror(errno));
@@ -72,9 +74,34 @@ struct work_info {
 	bool active;
 };
 
+struct module {
+	char *name;
+	// TODO: implement this
+	struct module *next;
+};
+
+struct service {
+	char *prefix;
+	struct module *module;
+	struct service *next;
+};
+
+struct host {
+	char *canonical;
+	struct service *service_head;
+};
+
+struct host_alias {
+	char *host;
+	struct host *canonical;
+	struct host_alias *next;
+};
+
 static struct listen *listen_head;
 static struct work_info **work;
 static unsigned work_cur, work_max;
+static struct host_alias *host_alias_head;
+static struct module *module_head;
 
 static void ch_init(struct channel *ch, int fd)
 {
@@ -601,6 +628,122 @@ static int ht_headers(struct channel *ch, struct buffer *bu, struct env *env)
 	return 0;
 }
 
+static int ho_add(struct host *host, const char *alias)
+{
+	struct host_alias *ha;
+
+	ha = calloc(1, sizeof(*ha));
+	if (!ha) {
+		sys_error();
+		return -1;
+	}
+
+	ha->host = strdup(alias);
+	if (!ha->host) {
+		sys_error();
+		free(ha);
+		return -1;
+	}
+	ha->next = host_alias_head;
+	ha->canonical = host;
+	host_alias_head = ha;
+
+	return 0;
+}
+
+static struct host *ho_create(const char *canonical)
+{
+	struct host *ho;
+
+	ho = calloc(1, sizeof(*ho));
+	if (!ho) {
+		sys_error();
+		return NULL;
+	}
+	ho->canonical = strdup(canonical);
+	if (!ho->canonical) {
+		sys_error();
+		free(ho);
+		return NULL;
+	}
+	ho->service_head = NULL;
+	ho_add(ho, canonical);
+	return ho;
+}
+
+static struct host *ho_find(const char *host_alias)
+{
+	struct host_alias *cu;
+
+	for (cu = host_alias_head; cu; cu = cu->next) {
+		if (!strcasecmp(host_alias, cu->host)) {
+			return cu->canonical;
+		}
+	}
+	return NULL;
+}
+
+static struct module *mo_find(const char *module)
+{
+	struct module *cu;
+
+	for (cu = module_head; cu; cu = cu->next) {
+		if (!strcasecmp(module, cu->name)) {
+			return cu;
+		}
+	}
+	return NULL;
+}
+
+/* match a subpath. */
+static int match_subpath(const char *prefix, const char *path, const char **sub)
+{
+	char prev = 0;
+	while (*prefix && *prefix == *path) {
+		prefix++;
+		prev = *path++;
+	}
+	if (sub)
+		*sub = path;
+	return *prefix == 0 && ( *path == 0 || prev == '/');
+}
+
+static struct service *se_find(struct host *host,
+	const char *path, const char **sub)
+{
+	struct service *cu;
+
+	for (cu = host->service_head; cu; cu = cu->next) {
+		if (match_subpath(cu->prefix, path, sub)) {
+			return cu;
+		}
+	}
+	return NULL;
+}
+
+static int se_add(struct host *host, const char *prefix, const char *module)
+{
+	struct service *se;
+
+	se = calloc(1, sizeof(*se));
+	if (!se) {
+		sys_error();
+		return -1;
+	}
+
+	se->prefix = strdup(prefix);
+	if (!se->prefix) {
+		sys_error();
+		free(se);
+		return -1;
+	}
+	se->module = mo_find(module);
+	se->next = host->service_head;
+	host->service_head = se;
+
+	return 0;
+}
+
 static int ht_process(struct channel *ch)
 {
 	char buf[4096];
@@ -610,6 +753,10 @@ static int ht_process(struct channel *ch)
 	char uri[512];
 	char version[10];
 	const char *host;
+	struct service *se;
+	struct module *mo;
+	struct host *ho;
+	const char *sub;
 
 	if (ht_method(ch, &bu, sizeof(method), method, sizeof(uri), uri,
 		sizeof(version), version))
@@ -629,10 +776,32 @@ static int ht_process(struct channel *ch)
 		return 0;
 	}
 
+	ho = ho_find(host);
+	if (!ho) {
+		ht_response(ch, 403);
+		ch_puts(ch, "Content-Type: text/plain\r\n");
+		ch_puts(ch, "Connection: close\r\n");
+		ch_puts(ch, "\r\n");
+		ch_printf(ch, "Host %s is unavailable.\n", host);
+		return 0;
+	}
+
 	printf("method=%s\n", method);
 	printf("uri=%s\n", uri);
 	printf("version=%s\n", version);
-	printf("Host=%s\n", host);
+	printf("Host=%s (%s)\n", host, ho->canonical);
+
+	se = se_find(ho, uri, &sub);
+	if (!se) {
+		ht_response(ch, 404);
+		ch_puts(ch, "Content-Type: text/plain\r\n");
+		ch_puts(ch, "Connection: close\r\n");
+		ch_puts(ch, "\r\n");
+		ch_printf(ch, "Request-URI %s is unavailable.\n", uri);
+		return 0;
+	}
+
+	mo = se->module;
 
 	ht_response(ch, 200);
 	/* send some basic headers */
@@ -641,7 +810,8 @@ static int ht_process(struct channel *ch)
 	ch_puts(ch, "\r\n");
 	// TODO: output a real response
 	ch_puts(ch, "Hello World!\n");
-	ch_printf(ch, "\n\turi=%s\n\thost=%s\n", uri, host);
+	ch_printf(ch, "\n\turi=%s\n\thost=%s\n\tmodule=%s\n\tsubpath=%s\n",
+		uri, ho->canonical, mo ? mo->name : "(none)", sub);
 	return 0;
 }
 
@@ -727,10 +897,25 @@ static void main_loop(void)
 
 }
 
+static int config(void)
+{
+	struct host *ho;
+
+	/* TODO: check the port number */
+	ho = ho_create("localhost");
+	ho_add(ho, "localhost:1080");
+	ho_add(ho, "localhost:8080");
+	ho_add(ho, "localhost:80");
+
+	se_add(ho, "/", "(unknown)");
+}
+
 int main()
 {
 	if (ht_listen(NULL, "8080"))
 		return 1;
+
+	config();
 	wi_start(100);
 
 	main_loop();
