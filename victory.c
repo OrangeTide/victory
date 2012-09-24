@@ -86,15 +86,34 @@ struct service {
 	struct service *next;
 };
 
-struct host {
-	char *canonical;
+/* domain is an internal identifier for one or more interfaces */
+struct domain {
+	char *name;
 	struct service *service_head;
 };
 
 struct host_alias {
 	char *host;
-	struct host *canonical;
+	struct domain *domain;
 	struct host_alias *next;
+};
+
+enum csv_state {
+	CSV_START,
+	CSV_ESCAPED,
+	CSV_ESCAPED_DQUOTE,
+	CSV_UNESCAPED,
+	CSV_NEWLINE,
+	CSV_ERROR,
+};
+
+struct csv_parser {
+	enum csv_state s;
+	unsigned row, col;
+	struct buffer buf;
+	void *p;
+	int (*field)(void *p, unsigned row, unsigned col, size_t len, const char *str);
+	int (*row_end)(void *p, unsigned row);
 };
 
 static struct listen *listen_head;
@@ -293,6 +312,15 @@ static void buffer_consume(struct buffer *bu, unsigned count)
 	bu->cur -= count;
 }
 
+static int buffer_addch(struct buffer *bu, char ch)
+{
+	if (bu->cur + 1 >= bu->max)
+		return -1;
+	bu->data[bu->cur++] = ch;
+	bu->data[bu->cur] = 0;
+	return 0;
+}
+
 static void env_init(struct env *env)
 {
 	memset(env->area, 'X', sizeof(env->area));
@@ -412,14 +440,6 @@ static void hs_init(struct headers_state *hs)
 	hs->done = false;
 }
 
-static void append(struct buffer *bu, char ch)
-{
-	if (bu->cur + 1 >= bu->max)
-		return;
-	bu->data[bu->cur++] = ch;
-	bu->data[bu->cur] = 0;
-}
-
 static int methodline_parse(struct buffer *bu, struct methodline_state *ms,
 	struct buffer *method, struct buffer *uri, struct buffer *version)
 {
@@ -437,13 +457,13 @@ static int methodline_parse(struct buffer *bu, struct methodline_state *ms,
 			if (ch == ' ')
 				ms->state = 1;
 			else
-				append(method, ch);
+				buffer_addch(method, ch);
 			break;
 		case 1: /* uri */
 			if (ch == ' ')
 				ms->state = 2;
 			else
-				append(uri, ch);
+				buffer_addch(uri, ch);
 			break;
 		case 2: /* version */
 			if (ch == '\r')
@@ -451,7 +471,7 @@ static int methodline_parse(struct buffer *bu, struct methodline_state *ms,
 			else if (isspace(ch))
 				goto parse_error;
 			else
-				append(version, ch);
+				buffer_addch(version, ch);
 			break;
 		case 3: /* CR */
 			if (ch == '\n')
@@ -527,7 +547,7 @@ static int headers_parse(struct buffer *bu, struct headers_state *hs,
 					env_set(env, name->data, value->data);
 				buffer_reset(name);
 				buffer_reset(value);
-				append(name, ch);
+				buffer_addch(name, ch);
 				hs->state = 11;
 			}
 			break;
@@ -539,7 +559,7 @@ static int headers_parse(struct buffer *bu, struct headers_state *hs,
 			} else if (isspace(ch)) {
 				goto parse_error;
 			} else {
-				append(name, ch);
+				buffer_addch(name, ch);
 			}
 			break;
 		case 1: /* LWS after name */
@@ -554,7 +574,7 @@ static int headers_parse(struct buffer *bu, struct headers_state *hs,
 			if (ch == ' ' || ch == '\t') {
 				hs->state = 3;
 			} else {
-				append(value, ch);
+				buffer_addch(value, ch);
 				hs->state = 4;
 			}
 			break;
@@ -564,7 +584,7 @@ static int headers_parse(struct buffer *bu, struct headers_state *hs,
 			} else if (isspace(ch)) {
 				goto parse_error;
 			} else {
-				append(value, ch);
+				buffer_addch(value, ch);
 				hs->state = 4;
 			}
 			break;
@@ -572,7 +592,7 @@ static int headers_parse(struct buffer *bu, struct headers_state *hs,
 			if (ch == '\r')
 				hs->state = 5;
 			else
-				append(value, ch);
+				buffer_addch(value, ch);
 			break;
 		case 5: /* CR after value */
 			if (ch == '\n')
@@ -628,7 +648,7 @@ static int ht_headers(struct channel *ch, struct buffer *bu, struct env *env)
 	return 0;
 }
 
-static int ho_add(struct host *host, const char *alias)
+static int ha_add(struct domain *dom, const char *alias)
 {
 	struct host_alias *ha;
 
@@ -645,42 +665,61 @@ static int ho_add(struct host *host, const char *alias)
 		return -1;
 	}
 	ha->next = host_alias_head;
-	ha->canonical = host;
+	ha->domain = dom;
 	host_alias_head = ha;
 
 	return 0;
 }
 
-static struct host *ho_create(const char *canonical)
-{
-	struct host *ho;
-
-	ho = calloc(1, sizeof(*ho));
-	if (!ho) {
-		sys_error();
-		return NULL;
-	}
-	ho->canonical = strdup(canonical);
-	if (!ho->canonical) {
-		sys_error();
-		free(ho);
-		return NULL;
-	}
-	ho->service_head = NULL;
-	ho_add(ho, canonical);
-	return ho;
-}
-
-static struct host *ho_find(const char *host_alias)
+/* find a hosting domain by a host alias. */
+static struct domain *ha_find_dom(const char *host_alias)
 {
 	struct host_alias *cu;
 
 	for (cu = host_alias_head; cu; cu = cu->next) {
 		if (!strcasecmp(host_alias, cu->host)) {
-			return cu->canonical;
+			return cu->domain;
 		}
 	}
 	return NULL;
+}
+
+static struct domain *dom_find(const char *name)
+{
+	struct host_alias *cu;
+	/* must walk the host aliases to find all the hosting domains.
+	 * there will be many duplicate comparisons this way. */
+
+	for (cu = host_alias_head; cu; cu = cu->next) {
+		if (!strcasecmp(name, cu->domain->name)) {
+			return cu->domain;
+		}
+	}
+	return NULL;
+}
+
+/* create a hosting domain, if it does not already exist */
+static struct domain *dom_create(const char *name)
+{
+	struct domain *dom;
+
+	assert(name != NULL);
+	dom = dom_find(name);
+	if (dom)
+		return dom;
+	dom = calloc(1, sizeof(*dom));
+	if (!dom) {
+		sys_error();
+		return NULL;
+	}
+	dom->name = strdup(name);
+	if (!dom->name) {
+		sys_error();
+		free(dom);
+		return NULL;
+	}
+	dom->service_head = NULL;
+	return dom;
 }
 
 static struct module *mo_find(const char *module)
@@ -708,12 +747,12 @@ static int match_subpath(const char *prefix, const char *path, const char **sub)
 	return *prefix == 0 && ( *path == 0 || prev == '/');
 }
 
-static struct service *se_find(struct host *host,
+static struct service *se_find(struct domain *dom,
 	const char *path, const char **sub)
 {
 	struct service *cu;
 
-	for (cu = host->service_head; cu; cu = cu->next) {
+	for (cu = dom->service_head; cu; cu = cu->next) {
 		if (match_subpath(cu->prefix, path, sub)) {
 			return cu;
 		}
@@ -721,7 +760,7 @@ static struct service *se_find(struct host *host,
 	return NULL;
 }
 
-static int se_add(struct host *host, const char *prefix, const char *module)
+static int se_add(struct domain *dom, const char *prefix, const char *module)
 {
 	struct service *se;
 
@@ -738,8 +777,8 @@ static int se_add(struct host *host, const char *prefix, const char *module)
 		return -1;
 	}
 	se->module = mo_find(module);
-	se->next = host->service_head;
-	host->service_head = se;
+	se->next = dom->service_head;
+	dom->service_head = se;
 
 	return 0;
 }
@@ -755,7 +794,7 @@ static int ht_process(struct channel *ch)
 	const char *host;
 	struct service *se;
 	struct module *mo;
-	struct host *ho;
+	struct domain *dom;
 	const char *sub;
 
 	if (ht_method(ch, &bu, sizeof(method), method, sizeof(uri), uri,
@@ -776,28 +815,30 @@ static int ht_process(struct channel *ch)
 		return 0;
 	}
 
-	ho = ho_find(host);
-	if (!ho) {
+	dom = ha_find_dom(host);
+	if (!dom) {
 		ht_response(ch, 403);
 		ch_puts(ch, "Content-Type: text/plain\r\n");
 		ch_puts(ch, "Connection: close\r\n");
 		ch_puts(ch, "\r\n");
-		ch_printf(ch, "Host %s is unavailable.\n", host);
+		ch_printf(ch, "Host %s is unavailable.\n\n", host);
 		return 0;
 	}
 
 	printf("method=%s\n", method);
 	printf("uri=%s\n", uri);
 	printf("version=%s\n", version);
-	printf("Host=%s (%s)\n", host, ho->canonical);
+	printf("Host=%s (%s)\n", host, dom->name);
 
-	se = se_find(ho, uri, &sub);
+	se = se_find(dom, uri, &sub);
 	if (!se) {
 		ht_response(ch, 404);
 		ch_puts(ch, "Content-Type: text/plain\r\n");
 		ch_puts(ch, "Connection: close\r\n");
 		ch_puts(ch, "\r\n");
-		ch_printf(ch, "Request-URI %s is unavailable.\n", uri);
+		ch_printf(ch, "Request-URI %s is unavailable.\n\n", uri);
+		ch_printf(ch, "dom=%s\n", dom->name);
+		ch_printf(ch, "host=%s\n", host);
 		return 0;
 	}
 
@@ -811,7 +852,7 @@ static int ht_process(struct channel *ch)
 	// TODO: output a real response
 	ch_puts(ch, "Hello World!\n");
 	ch_printf(ch, "\n\turi=%s\n\thost=%s\n\tmodule=%s\n\tsubpath=%s\n",
-		uri, ho->canonical, mo ? mo->name : "(none)", sub);
+		uri, dom->name, mo ? mo->name : "(none)", sub);
 	return 0;
 }
 
@@ -897,25 +938,295 @@ static void main_loop(void)
 
 }
 
+static void _csv_next_field(struct csv_parser *cp)
+{
+	if (cp->field) {
+		if (cp->field(cp->p, cp->row, cp->col, cp->buf.cur, cp->buf.data)) {
+			cp->s = CSV_ERROR;
+			return;
+		}
+	}
+	cp->s = CSV_START;
+	cp->col++;
+	buffer_reset(&cp->buf);
+}
+
+static void _csv_next_row(struct csv_parser *cp)
+{
+	_csv_next_field(cp);
+	if (cp->row_end)
+		if (cp->row_end(cp->p, cp->row))
+			cp->s = CSV_ERROR;
+	cp->col = 0;
+	cp->row++;
+}
+
+static int _csv_escaped_dquote(struct csv_parser *cp)
+{
+	if (buffer_addch(&cp->buf, '"'))
+		return -1;
+	cp->s = CSV_ESCAPED;
+	return 0;
+}
+
+static int csv_init(struct csv_parser *cp, char *fieldbuf, size_t fieldbuf_max,
+	void *p,
+	int (*field)(void *p, unsigned row, unsigned col, size_t len, const char *str),
+	int (*row_end)(void *p, unsigned row))
+{
+	if (!cp)
+		return -1;
+	memset(cp, 0, sizeof(*cp));
+	buffer_init(&cp->buf, fieldbuf, fieldbuf_max);
+	cp->row = 0;
+	cp->col = 0;
+	cp->s = CSV_START;
+	cp->p = p;
+	cp->field = field;
+	cp->row_end = row_end;
+	return 0;
+}
+
+static int csv(struct csv_parser *cp, const char *buf, size_t len)
+{
+	while (len > 0) {
+		char ch = *buf;
+
+		buf++;
+		len--;
+		switch (cp->s) {
+		case CSV_START:
+			if (ch == '\r')
+				cp->s = CSV_NEWLINE;
+			else if (ch == '\n')
+				_csv_next_row(cp);
+			else if (ch == '"')
+				cp->s = CSV_ESCAPED;
+			else if (ch == ',')
+				_csv_next_field(cp);
+			else
+				goto unescaped;
+			break;
+		case CSV_ESCAPED:
+			if (ch == '"')
+				cp->s = CSV_ESCAPED_DQUOTE;
+			else if (buffer_addch(&cp->buf, ch))
+				return -1;
+			break;
+		case CSV_ESCAPED_DQUOTE:
+			if (ch == '\r')
+				cp->s = CSV_NEWLINE;
+			else if (ch == '\n')
+				_csv_next_row(cp);
+			else if (ch == '"') {
+				if (_csv_escaped_dquote(cp))
+					return -1;
+			} else if (ch == ',')
+				_csv_next_field(cp);
+			else
+				goto unescaped; /* deviates from RFC 4180 */
+			break;
+unescaped:
+		cp->s = CSV_UNESCAPED;
+		case CSV_UNESCAPED:
+			if (ch == '\r')
+				cp->s = CSV_NEWLINE;
+			else if (ch == '\n')
+				_csv_next_row(cp);
+			else if (ch == '"')
+				cp->s = CSV_ESCAPED; /* deviates from RFC 4180 */
+			else if (ch == ',')
+				_csv_next_field(cp);
+			else if (buffer_addch(&cp->buf, ch))
+				return -1;
+			break;
+		case CSV_NEWLINE:
+			if (ch == '\n')
+				_csv_next_row(cp);
+			else
+				return -1;
+		case CSV_ERROR:
+			return -1;
+		}
+	}
+	return cp->s == CSV_ERROR ? -1 : 0;
+}
+
+static int csv_eof(struct csv_parser *cp)
+{
+	switch (cp->s) {
+	case CSV_START:
+		return 0;
+	case CSV_UNESCAPED:
+		_csv_next_field(cp);
+		return 0;
+	case CSV_ESCAPED:
+	case CSV_ESCAPED_DQUOTE:
+	case CSV_NEWLINE:
+	case CSV_ERROR:
+		return -1;
+	}
+	return -1;
+}
+
+static int csv_load(const char *filename, void *p,
+	int (*field)(void *p, unsigned row, unsigned col, size_t len, const char *str),
+	int (*row_end)(void *p, unsigned row))
+{
+	char inbuf[1024];
+	char fieldbuf[4096];
+	int len;
+	struct csv_parser cp;
+	FILE *f;
+
+	f = fopen(filename, "r");
+	if (!f) {
+		perror(filename);
+		return -1;
+	}
+
+	if (csv_init(&cp, fieldbuf, sizeof(fieldbuf), p, field, row_end))
+		goto close_file;
+	do {
+		len = fread(inbuf, 1, sizeof(inbuf), f);
+		if (ferror(f)) {
+			perror(filename);
+			goto close_file;
+		}
+		if (csv(&cp, inbuf, len)) {
+			fprintf(stderr, "%s:parse error (row=%d col=%d)\n",
+				filename, cp.row, cp.col);
+			goto close_file;
+		}
+	} while (!feof(f));
+	if (csv_eof(&cp)) {
+		fprintf(stderr, "%s:parse error:unexpected end of file\n",
+			filename);
+		goto close_file;
+	}
+	fclose(f);
+	return 0;
+close_file:
+	fclose(f);
+	return -1;
+}
+
+/*
+static int field(void *p, unsigned row, unsigned col, size_t len, const char *str)
+{
+	printf("FIELD:%d:%d:\"%.*s\"\n", row, col, len, str);
+	return 0;
+}
+
+static int row_end(void *p, unsigned row)
+{
+	printf("ROW:%d\n", row);
+	return 0;
+}
+*/
+
+struct port_info {
+	char *domain, *addr, *port, *canonical;
+};
+
+static void po_free(struct port_info *pi)
+{
+	if (!pi)
+		return;
+	free(pi->domain);
+	pi->domain = NULL;
+	free(pi->addr);
+	pi->addr = NULL;
+	free(pi->port);
+	pi->port = NULL;
+	free(pi->canonical);
+	pi->canonical = NULL;
+}
+
+
+static int po_field(void *p, unsigned row, unsigned col,
+	size_t len, const char *str)
+{
+	struct port_info *pi = p;
+
+	assert(pi != NULL);
+	if (!row) /* ignore first row */
+		return 0;
+	switch (col) {
+	case 0:
+		memset(pi, 0, sizeof(*pi));
+		pi->domain = strdup(str);
+		break;
+	case 1:
+		assert(pi->addr == NULL);
+		pi->addr = strdup(str);
+		break;
+	case 2:
+		assert(pi->port == NULL);
+		pi->port = strdup(str);
+		break;
+	case 3:
+		assert(pi->canonical == NULL);
+		pi->canonical = strdup(str);
+		break;
+	default:
+		printf("FIELD:%d:%d:\"%s\":unknown field\n", row, col, str);
+		return -1;
+	}
+
+	//printf("FIELD:%d:%d:\"%.*s\"\n", row, col, len, str);
+	return 0;
+}
+
+static int po_row_end(void *p, unsigned row)
+{
+	struct port_info *pi = p;
+	struct domain *dom;
+
+	assert(pi != NULL);
+	if (!row) /* ignore first row */
+		return 0;
+
+	//printf("ROW:%d\n", row);
+	printf("ROW:%d:%s,%s,%s,%s\n", row, pi->domain, pi->canonical, pi->addr, pi->port);
+	if (!pi->domain || !pi->canonical)
+		return -1;
+
+	dom = dom_create(pi->domain);
+	if (!dom)
+		return -1;
+	ha_add(dom, pi->canonical);
+
+	if (ht_listen(pi->addr, pi->port))
+		return -1;
+
+	po_free(pi);
+	return 0;
+}
+
 static int config(void)
 {
-	struct host *ho;
+	struct port_info pi;
+	int ret;
 
-	/* TODO: check the port number */
-	ho = ho_create("localhost");
-	ho_add(ho, "localhost:1080");
-	ho_add(ho, "localhost:8080");
-	ho_add(ho, "localhost:80");
+	memset(&pi, 0, sizeof(pi));
+	ret = csv_load("ports.csv", &pi, po_field, po_row_end);
+	po_free(&pi);
+	if (ret)
+		return -1;
 
-	se_add(ho, "/", "(unknown)");
+#if 1 /* test code */
+	ret = se_add(dom_find("myhost"), "/", "(unknown)");
+	if (ret)
+		return -1;
+#endif
+	return 0;
 }
 
 int main()
 {
-	if (ht_listen(NULL, "8080"))
+	if (config())
 		return 1;
-
-	config();
 	wi_start(100);
 
 	main_loop();
