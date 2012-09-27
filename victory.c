@@ -27,6 +27,7 @@
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <unistd.h>
+#include <dlfcn.h>
 
 #define HT_RESPONSE_200 "HTTP/1.1 200 OK\r\n"
 #define HT_RESPONSE_400 "HTTP/1.1 400 Bad Request\r\n"
@@ -74,9 +75,14 @@ struct work_info {
 	bool active;
 };
 
+struct module_handle {
+	void *h;
+	void *app_data;
+};
+
 struct module {
 	char *name;
-	// TODO: implement this
+	struct module_handle mh;
 	struct module *next;
 };
 
@@ -727,15 +733,77 @@ static struct domain *dom_create(const char *name)
 	return dom;
 }
 
+static int dll_open(struct module_handle *mh, const char *path, const char *args)
+{
+	void *h;
+	void *app_data;
+	void *(*init)(const char *args);
+
+	memset(mh, 0, sizeof(*mh));
+#if 0
+	h = dlopen(path, RTLD_NOW);
+	if (!h) {
+		fprintf(stderr, "ERROR:unable to load module '%s':%s\n",
+			path, dlerror());
+		return -1;
+	}
+
+	init = dlsym(h, "module_initialize");
+	if (!init) {
+		dlclose(h);
+		return -1;
+	}
+	app_data = init(args);
+	if (!app_data) {
+		dlclose(h);
+		return -1;
+	}
+
+	mh->h = h;
+	mh->app_data = app_data;
+#else
+	// TODO: enable dlopen() above
+#endif
+	return 0;
+}
+
 static struct module *mo_find(const char *module)
 {
 	struct module *cu;
 
 	for (cu = module_head; cu; cu = cu->next) {
-		if (!strcasecmp(module, cu->name)) {
+		if (!strcasecmp(module, cu->name))
 			return cu;
-		}
 	}
+	return NULL;
+}
+
+static struct module *mo_load(const char *name, const char *dll_path, const char *args)
+{
+	struct module *mo;
+
+	mo = mo_find(name);
+	if (mo) {
+		fprintf(stderr, "module '%s' is already loaded\n", name);
+		return NULL;
+	}
+
+	mo = calloc(1, sizeof(*mo));
+	if (!mo) {
+		sys_error();
+		return NULL;
+	}
+
+	if (dll_open(&mo->mh, dll_path, args))
+		goto error;
+	mo->name = strdup(name);
+	mo->next = module_head;
+	module_head = mo;
+
+	printf("MODULE:%s\n", name);
+	return mo;
+error:
+	free(mo);
 	return NULL;
 }
 
@@ -791,6 +859,15 @@ static struct service *se_find_exact(struct domain *dom, const char *path)
 static int se_add(struct domain *dom, const char *prefix, const char *module)
 {
 	struct service *se;
+	struct module *mo;
+
+	assert(dom != NULL);
+	mo = mo_find(module);
+	if (!mo) {
+		fprintf(stderr, "ERROR:module '%s' unknown for service %s:%s\n",
+			module, dom->name, prefix);
+		return -1;
+	}
 
 	se = se_find_exact(dom, prefix);
 	if (se) {
@@ -1166,6 +1243,72 @@ static void trim_whitespace(const char **str, size_t *len)
 	*len = l;
 }
 
+struct module_info {
+	char *module, *dll_path, *args;
+};
+
+static void mi_free(struct module_info *mi)
+{
+	if (!mi)
+		return;
+	free(mi->module);
+	mi->module = NULL;
+	free(mi->dll_path);
+	mi->dll_path = NULL;
+	free(mi->args);
+	mi->args = NULL;
+}
+
+static int mi_field(void *p, unsigned row, unsigned col,
+	size_t len, const char *str)
+{
+	struct module_info *mi = p;
+
+	assert(mi != NULL);
+	if (!row) /* ignore first row */
+		return 0;
+	trim_whitespace(&str, &len);
+	switch (col) {
+	case 0:
+		memset(mi, 0, sizeof(*mi));
+		mi->module = strndup(str, len);
+		break;
+	case 1:
+		assert(mi->dll_path == NULL);
+		mi->dll_path = strndup(str, len);
+		break;
+	case 2:
+		assert(mi->args == NULL);
+		mi->args = strndup(str, len);
+		break;
+	default:
+		printf("FIELD:%d:%d:\"%s\":unknown field\n", row, col, str);
+		return -1;
+	}
+
+	return 0;
+}
+
+static int mi_row_end(void *p, unsigned row)
+{
+	struct module_info *mi = p;
+	struct module *mod;
+
+	assert(mi != NULL);
+	if (!row) /* ignore first row */
+		return 0;
+
+	if (!mi->module || !mi->dll_path)
+		return -1;
+
+	mod = mo_load(mi->module, mi->dll_path, mi->args);
+	if (!mod)
+		return -1;
+
+	mi_free(mi);
+	return 0;
+}
+
 struct port_info {
 	char *domain, *addr, *port, *canonical;
 };
@@ -1183,7 +1326,6 @@ static void pi_free(struct port_info *pi)
 	free(pi->canonical);
 	pi->canonical = NULL;
 }
-
 
 static int pi_field(void *p, unsigned row, unsigned col,
 	size_t len, const char *str)
@@ -1259,7 +1401,6 @@ static void si_free(struct service_info *si)
 	si->module = NULL;
 }
 
-
 static int si_field(void *p, unsigned row, unsigned col,
 	size_t len, const char *str)
 {
@@ -1314,22 +1455,48 @@ static int si_row_end(void *p, unsigned row)
 	return 0;
 }
 
-static int config(void)
+/* load bind address and domains */
+static int config_port(void)
 {
 	struct port_info pi;
-	struct service_info si;
 	int ret;
 
 	memset(&pi, 0, sizeof(pi));
 	ret = csv_load("ports.csv", &pi, pi_field, pi_row_end);
 	pi_free(&pi);
-	if (ret)
-		return -1;
+	return ret;
+}
+
+/* load service paths */
+static int config_service(void)
+{
+	struct service_info si;
+	int ret;
 
 	memset(&si, 0, sizeof(si));
 	ret = csv_load("services.csv", &si, si_field, si_row_end);
 	si_free(&si);
-	if (ret)
+	return ret;
+}
+
+static int config_module(void)
+{
+	struct module_info mi;
+	int ret;
+
+	memset(&mi, 0, sizeof(mi));
+	ret = csv_load("modules.csv", &mi, mi_field, mi_row_end);
+	mi_free(&mi);
+	return ret;
+}
+
+static int config(void)
+{
+	if (config_module())
+		return -1;
+	if (config_port())
+		return -1;
+	if (config_service())
 		return -1;
 
 	return 0;

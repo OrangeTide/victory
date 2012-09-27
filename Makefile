@@ -12,4 +12,4 @@ all :: victory
 clean :: ; $(RM) victory $(OBJS_victory)
 victory : $(OBJS_victory)
 victory : CFLAGS += -pthread
-victory : LDFLAGS += -pthread
+victory : LDFLAGS += -pthread -ldl
