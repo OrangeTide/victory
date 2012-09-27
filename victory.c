@@ -112,7 +112,8 @@ struct csv_parser {
 	unsigned row, col;
 	struct buffer buf;
 	void *p;
-	int (*field)(void *p, unsigned row, unsigned col, size_t len, const char *str);
+	int (*field)(void *p, unsigned row, unsigned col, size_t len,
+		const char *str);
 	int (*row_end)(void *p, unsigned row);
 };
 
@@ -491,9 +492,11 @@ complete:
 	buffer_consume(bu, s - bu->data);
 	return 0;
 parse_error:
-	fprintf(stderr, "%s():parse failure (%.*s)\n", __func__, bu->cur, bu->data);
+	fprintf(stderr, "%s():parse failure (%.*s)\n",
+		__func__, bu->cur, bu->data);
 	buffer_consume(bu, s - bu->data);
-	fprintf(stderr, "%s():parse failure @ %d (state=%d)\n", __func__, bu->cur, ms->state);
+	fprintf(stderr, "%s():parse failure @ %d (state=%d)\n",
+		__func__, bu->cur, ms->state);
 	return -1;
 }
 
@@ -618,9 +621,11 @@ complete:
 	buffer_consume(bu, s - bu->data);
 	return 0;
 parse_error:
-	fprintf(stderr, "%s():parse failure (%.*s)\n", __func__, bu->cur, bu->data);
+	fprintf(stderr, "%s():parse failure (%.*s)\n",
+		__func__, bu->cur, bu->data);
 	buffer_consume(bu, s - bu->data);
-	fprintf(stderr, "%s():parse failure @ %d (ch=%c state=%d)\n", __func__, bu->cur, ch, hs->state);
+	fprintf(stderr, "%s():parse failure @ %d (ch=%c state=%d)\n",
+		__func__, bu->cur, ch, hs->state);
 	return -1;
 }
 
@@ -738,24 +743,47 @@ static struct module *mo_find(const char *module)
 static int match_subpath(const char *prefix, const char *path, const char **sub)
 {
 	char prev = 0;
+
 	while (*prefix && *prefix == *path) {
 		prefix++;
 		prev = *path++;
 	}
 	if (sub)
 		*sub = path;
-	return *prefix == 0 && ( *path == 0 || prev == '/');
+
+	return *prefix == 0 && (*path == 0 || *path == '/' || prev == '/');
 }
 
 static struct service *se_find(struct domain *dom,
 	const char *path, const char **sub)
 {
 	struct service *cu;
+	struct service *best = NULL;
+	size_t cu_len, best_len = 1024;
+	const char *s;
 
 	for (cu = dom->service_head; cu; cu = cu->next) {
-		if (match_subpath(cu->prefix, path, sub)) {
-			return cu;
+		if (match_subpath(cu->prefix, path, &s)) {
+			assert(s != NULL);
+			cu_len = strlen(s);
+			if (!best || cu_len < best_len) {
+				best = cu;
+				best_len = cu_len;
+				if (sub)
+					*sub = s;
+			}
 		}
+	}
+	return best;
+}
+
+static struct service *se_find_exact(struct domain *dom, const char *path)
+{
+	struct service *cu;
+
+	for (cu = dom->service_head; cu; cu = cu->next) {
+		if (!strcmp(cu->prefix, path))
+			return cu;
 	}
 	return NULL;
 }
@@ -763,6 +791,13 @@ static struct service *se_find(struct domain *dom,
 static int se_add(struct domain *dom, const char *prefix, const char *module)
 {
 	struct service *se;
+
+	se = se_find_exact(dom, prefix);
+	if (se) {
+		fprintf(stderr, "ERROR:service path '%s' for domain "
+			"'%s' matches existing entry\n", prefix, dom->name);
+		return -1;
+	}
 
 	se = calloc(1, sizeof(*se));
 	if (!se) {
@@ -776,9 +811,12 @@ static int se_add(struct domain *dom, const char *prefix, const char *module)
 		free(se);
 		return -1;
 	}
-	se->module = mo_find(module);
+	se->module = mo_find(module); /* TODO: check for failures */
 	se->next = dom->service_head;
 	dom->service_head = se;
+
+	printf("SERVICE:dom=\"%s\" path=\"%s\" module=\"%s\"\n",
+		dom->name, prefix, module);
 
 	return 0;
 }
@@ -821,14 +859,14 @@ static int ht_process(struct channel *ch)
 		ch_puts(ch, "Content-Type: text/plain\r\n");
 		ch_puts(ch, "Connection: close\r\n");
 		ch_puts(ch, "\r\n");
-		ch_printf(ch, "Host %s is unavailable.\n\n", host);
+		ch_printf(ch, "Host \"%s\" is unavailable.\n\n", host);
 		return 0;
 	}
 
-	printf("method=%s\n", method);
-	printf("uri=%s\n", uri);
-	printf("version=%s\n", version);
-	printf("Host=%s (%s)\n", host, dom->name);
+	printf("method=\"%s\"\n", method);
+	printf("uri=\"%s\"\n", uri);
+	printf("version=\"%s\"\n", version);
+	printf("Host=\"%s\" (%s)\n", host, dom->name);
 
 	se = se_find(dom, uri, &sub);
 	if (!se) {
@@ -836,9 +874,9 @@ static int ht_process(struct channel *ch)
 		ch_puts(ch, "Content-Type: text/plain\r\n");
 		ch_puts(ch, "Connection: close\r\n");
 		ch_puts(ch, "\r\n");
-		ch_printf(ch, "Request-URI %s is unavailable.\n\n", uri);
-		ch_printf(ch, "dom=%s\n", dom->name);
-		ch_printf(ch, "host=%s\n", host);
+		ch_printf(ch, "Request-URI \"%s\" is unavailable.\n\n", uri);
+		ch_printf(ch, "dom=\"%s\"\n", dom->name);
+		ch_printf(ch, "host=\"%s\"\n", host);
 		return 0;
 	}
 
@@ -941,7 +979,8 @@ static void main_loop(void)
 static void _csv_next_field(struct csv_parser *cp)
 {
 	if (cp->field) {
-		if (cp->field(cp->p, cp->row, cp->col, cp->buf.cur, cp->buf.data)) {
+		if (cp->field(cp->p, cp->row, cp->col, cp->buf.cur,
+			cp->buf.data)) {
 			cp->s = CSV_ERROR;
 			return;
 		}
@@ -971,7 +1010,8 @@ static int _csv_escaped_dquote(struct csv_parser *cp)
 
 static int csv_init(struct csv_parser *cp, char *fieldbuf, size_t fieldbuf_max,
 	void *p,
-	int (*field)(void *p, unsigned row, unsigned col, size_t len, const char *str),
+	int (*field)(void *p, unsigned row, unsigned col,
+		size_t len, const char *str),
 	int (*row_end)(void *p, unsigned row))
 {
 	if (!cp)
@@ -1070,7 +1110,8 @@ static int csv_eof(struct csv_parser *cp)
 }
 
 static int csv_load(const char *filename, void *p,
-	int (*field)(void *p, unsigned row, unsigned col, size_t len, const char *str),
+	int (*field)(void *p, unsigned row, unsigned col,
+		size_t len, const char *str),
 	int (*row_end)(void *p, unsigned row))
 {
 	char inbuf[1024];
@@ -1111,25 +1152,25 @@ close_file:
 	return -1;
 }
 
-/*
-static int field(void *p, unsigned row, unsigned col, size_t len, const char *str)
+/* update str and len to remove leading and trailing whitespace. */
+static void trim_whitespace(const char **str, size_t *len)
 {
-	printf("FIELD:%d:%d:\"%.*s\"\n", row, col, len, str);
-	return 0;
-}
+	const char *s = *str;
+	size_t l = *len;
 
-static int row_end(void *p, unsigned row)
-{
-	printf("ROW:%d\n", row);
-	return 0;
+	for (s = *str, l = *len; (l > 0 && isspace(*s)); s++, l--)
+		;
+	while (l > 0 && isspace(s[l - 1]))
+		l--;
+	*str = s;
+	*len = l;
 }
-*/
 
 struct port_info {
 	char *domain, *addr, *port, *canonical;
 };
 
-static void po_free(struct port_info *pi)
+static void pi_free(struct port_info *pi)
 {
 	if (!pi)
 		return;
@@ -1144,7 +1185,7 @@ static void po_free(struct port_info *pi)
 }
 
 
-static int po_field(void *p, unsigned row, unsigned col,
+static int pi_field(void *p, unsigned row, unsigned col,
 	size_t len, const char *str)
 {
 	struct port_info *pi = p;
@@ -1152,33 +1193,33 @@ static int po_field(void *p, unsigned row, unsigned col,
 	assert(pi != NULL);
 	if (!row) /* ignore first row */
 		return 0;
+	trim_whitespace(&str, &len);
 	switch (col) {
 	case 0:
 		memset(pi, 0, sizeof(*pi));
-		pi->domain = strdup(str);
+		pi->domain = strndup(str, len);
 		break;
 	case 1:
 		assert(pi->addr == NULL);
-		pi->addr = strdup(str);
+		pi->addr = strndup(str, len);
 		break;
 	case 2:
 		assert(pi->port == NULL);
-		pi->port = strdup(str);
+		pi->port = strndup(str, len);
 		break;
 	case 3:
 		assert(pi->canonical == NULL);
-		pi->canonical = strdup(str);
+		pi->canonical = strndup(str, len);
 		break;
 	default:
 		printf("FIELD:%d:%d:\"%s\":unknown field\n", row, col, str);
 		return -1;
 	}
 
-	//printf("FIELD:%d:%d:\"%.*s\"\n", row, col, len, str);
 	return 0;
 }
 
-static int po_row_end(void *p, unsigned row)
+static int pi_row_end(void *p, unsigned row)
 {
 	struct port_info *pi = p;
 	struct domain *dom;
@@ -1187,8 +1228,6 @@ static int po_row_end(void *p, unsigned row)
 	if (!row) /* ignore first row */
 		return 0;
 
-	//printf("ROW:%d\n", row);
-	printf("ROW:%d:%s,%s,%s,%s\n", row, pi->domain, pi->canonical, pi->addr, pi->port);
 	if (!pi->domain || !pi->canonical)
 		return -1;
 
@@ -1200,26 +1239,99 @@ static int po_row_end(void *p, unsigned row)
 	if (ht_listen(pi->addr, pi->port))
 		return -1;
 
-	po_free(pi);
+	pi_free(pi);
+	return 0;
+}
+
+struct service_info {
+	char *domain, *path_prefix, *module;
+};
+
+static void si_free(struct service_info *si)
+{
+	if (!si)
+		return;
+	free(si->domain);
+	si->domain = NULL;
+	free(si->path_prefix);
+	si->path_prefix = NULL;
+	free(si->module);
+	si->module = NULL;
+}
+
+
+static int si_field(void *p, unsigned row, unsigned col,
+	size_t len, const char *str)
+{
+	struct service_info *si = p;
+
+	assert(si != NULL);
+	if (!row) /* ignore first row */
+		return 0;
+	trim_whitespace(&str, &len);
+	switch (col) {
+	case 0:
+		memset(si, 0, sizeof(*si));
+		si->domain = strndup(str, len);
+		break;
+	case 1:
+		assert(si->path_prefix == NULL);
+		si->path_prefix = strndup(str, len);
+		break;
+	case 2:
+		assert(si->module == NULL);
+		si->module = strndup(str, len);
+		break;
+	default:
+		fprintf(stderr, "FIELD:%d:%d:\"%s\":unknown field\n",
+			row, col, str);
+		return -1;
+	}
+
+	return 0;
+}
+
+static int si_row_end(void *p, unsigned row)
+{
+	struct service_info *si = p;
+	struct domain *dom;
+
+	assert(si != NULL);
+	if (!row) /* ignore first row */
+		return 0;
+
+	if (!si->domain || !si->path_prefix || !si->module)
+		return -1;
+
+	dom = dom_find(si->domain);
+	if (!dom)
+		return -1;
+
+	if (se_add(dom, si->path_prefix, si->module))
+		return -1;
+
+	si_free(si);
 	return 0;
 }
 
 static int config(void)
 {
 	struct port_info pi;
+	struct service_info si;
 	int ret;
 
 	memset(&pi, 0, sizeof(pi));
-	ret = csv_load("ports.csv", &pi, po_field, po_row_end);
-	po_free(&pi);
+	ret = csv_load("ports.csv", &pi, pi_field, pi_row_end);
+	pi_free(&pi);
 	if (ret)
 		return -1;
 
-#if 1 /* test code */
-	ret = se_add(dom_find("myhost"), "/", "(unknown)");
+	memset(&si, 0, sizeof(si));
+	ret = csv_load("services.csv", &si, si_field, si_row_end);
+	si_free(&si);
 	if (ret)
 		return -1;
-#endif
+
 	return 0;
 }
 

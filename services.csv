@@ -1,0 +1,3 @@
+"domain","path prefix","module"
+"myhost","/","hello"
+"myhost","/error","error"
