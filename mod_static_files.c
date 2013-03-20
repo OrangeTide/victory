@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012 Jon Mayo
+ * Copyright (c) 2012-2013 Jon Mayo
  *
  * Permission to use, copy, modify, and distribute this software for any
  * purpose with or without fee is hereby granted, provided that the above
@@ -28,8 +28,8 @@
 #include "container_of.h"
 #include "httpd.h"
 #include "module.h"
-#include "mod_static_files.h"
 #include "ext.h"
+#include "mod_static_files.h"
 
 struct mod_static_file_info {
 	struct data app_data;

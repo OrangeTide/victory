@@ -1,3 +1,4 @@
 "enabled", "host", "uri","module","args"
 "1","*","/*","static_files","/var/www/"
+"1","*","/counter","counter",""
 "1","*","/cgi-bin","cgibin"

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012 Jon Mayo
+ * Copyright (c) 2012-2013 Jon Mayo
  *
  * Permission to use, copy, modify, and distribute this software for any
  * purpose with or without fee is hereby granted, provided that the above
@@ -20,9 +20,10 @@
 #include "daemonize.h"
 #include "service.h"
 #include "csv.h"
-#include "mod_static_files.h"
 #include "logger.h"
 #include "ext.h"
+#include "mod_static_files.h"
+#include "mod_counter.h"
 
 struct service_config_info {
 	unsigned current_row;
@@ -125,6 +126,12 @@ failure:
 	return -1;
 }
 
+static void module_register_all(void)
+{
+	module_register("static_files", &mod_static_files);
+	module_register("counter", &mod_counter);
+}
+
 int main(int argc, char *argv[])
 {
 #ifdef USE_SYSLOG
@@ -136,7 +143,7 @@ int main(int argc, char *argv[])
 	openlog(prog_name, LOG_PERROR | LOG_PID, LOG_DAEMON);
 #endif
 
-	module_register("static_files", &mod_static_files);
+	module_register_all();
 
 	load_services("serv.csv");
 	ext_config_load("mime.csv");
