@@ -29,18 +29,15 @@
 #include <unistd.h>
 #include <dlfcn.h>
 
+#include "buffer.h"
 #include "channel.h"
 #include "net.h"
 #include "logger.h"
+#include "csv.h"
 
 struct listen {
 	struct net_listen sock;
 	struct listen *next;
-};
-
-struct buffer {
-	unsigned cur, max;
-	char *data;
 };
 
 struct env {
@@ -93,25 +90,6 @@ struct host_alias {
 	struct host_alias *next;
 };
 
-enum csv_state {
-	CSV_START,
-	CSV_ESCAPED,
-	CSV_ESCAPED_DQUOTE,
-	CSV_UNESCAPED,
-	CSV_NEWLINE,
-	CSV_ERROR,
-};
-
-struct csv_parser {
-	enum csv_state s;
-	unsigned row, col;
-	struct buffer buf;
-	void *p;
-	int (*field)(void *p, unsigned row, unsigned col, size_t len,
-		const char *str);
-	int (*row_end)(void *p, unsigned row);
-};
-
 static struct listen *listen_head;
 static struct work_info **work;
 static unsigned work_cur, work_max;
@@ -159,44 +137,13 @@ void ht_response(struct channel *ch, int status_code)
 static void li_server_create(void *p, struct net_listen sock,
 	size_t desc_len, const char *desc)
 {
+	Debug("listening... %s\n", desc);
 	if (li_add(sock)) {
 		close(sock.fd);
+		Error("listening... %s\n", desc);
 		return;
 	}
 	Info("listen:%s\n", desc);
-}
-
-#define buffer_wrap(str) { 0, sizeof(str), (str) }
-
-static void buffer_reset(struct buffer *bu)
-{
-	bu->cur = 0;
-	bu->data[0] = 0;
-}
-
-static void buffer_init(struct buffer *bu, char *data, size_t max)
-{
-	assert(data != NULL && max > 0);
-	bu->data = data;
-	bu->max = max;
-	buffer_reset(bu);
-}
-
-static void buffer_consume(struct buffer *bu, unsigned count)
-{
-	assert(count <= bu->cur);
-	if (count <= bu->cur)
-		memmove(bu->data, bu->data + count, bu->cur - count);
-	bu->cur -= count;
-}
-
-static int buffer_addch(struct buffer *bu, char ch)
-{
-	if (bu->cur + 1 >= bu->max)
-		return -1;
-	bu->data[bu->cur++] = ch;
-	bu->data[bu->cur] = 0;
-	return 0;
 }
 
 static void env_init(struct env *env)
@@ -899,182 +846,6 @@ static void main_loop(void)
 
 }
 
-static void _csv_next_field(struct csv_parser *cp)
-{
-	if (cp->field) {
-		if (cp->field(cp->p, cp->row, cp->col, cp->buf.cur,
-			cp->buf.data)) {
-			cp->s = CSV_ERROR;
-			return;
-		}
-	}
-	cp->s = CSV_START;
-	cp->col++;
-	buffer_reset(&cp->buf);
-}
-
-static void _csv_next_row(struct csv_parser *cp)
-{
-	_csv_next_field(cp);
-	if (cp->row_end)
-		if (cp->row_end(cp->p, cp->row))
-			cp->s = CSV_ERROR;
-	cp->col = 0;
-	cp->row++;
-}
-
-static int _csv_escaped_dquote(struct csv_parser *cp)
-{
-	if (buffer_addch(&cp->buf, '"'))
-		return -1;
-	cp->s = CSV_ESCAPED;
-	return 0;
-}
-
-static int csv_init(struct csv_parser *cp, char *fieldbuf, size_t fieldbuf_max,
-	void *p,
-	int (*field)(void *p, unsigned row, unsigned col,
-		size_t len, const char *str),
-	int (*row_end)(void *p, unsigned row))
-{
-	if (!cp)
-		return -1;
-	memset(cp, 0, sizeof(*cp));
-	buffer_init(&cp->buf, fieldbuf, fieldbuf_max);
-	cp->row = 0;
-	cp->col = 0;
-	cp->s = CSV_START;
-	cp->p = p;
-	cp->field = field;
-	cp->row_end = row_end;
-	return 0;
-}
-
-static int csv(struct csv_parser *cp, const char *buf, size_t len)
-{
-	while (len > 0) {
-		char ch = *buf;
-
-		buf++;
-		len--;
-		switch (cp->s) {
-		case CSV_START:
-			if (ch == '\r')
-				cp->s = CSV_NEWLINE;
-			else if (ch == '\n')
-				_csv_next_row(cp);
-			else if (ch == '"')
-				cp->s = CSV_ESCAPED;
-			else if (ch == ',')
-				_csv_next_field(cp);
-			else
-				goto unescaped;
-			break;
-		case CSV_ESCAPED:
-			if (ch == '"')
-				cp->s = CSV_ESCAPED_DQUOTE;
-			else if (buffer_addch(&cp->buf, ch))
-				return -1;
-			break;
-		case CSV_ESCAPED_DQUOTE:
-			if (ch == '\r')
-				cp->s = CSV_NEWLINE;
-			else if (ch == '\n')
-				_csv_next_row(cp);
-			else if (ch == '"') {
-				if (_csv_escaped_dquote(cp))
-					return -1;
-			} else if (ch == ',')
-				_csv_next_field(cp);
-			else
-				goto unescaped; /* deviates from RFC 4180 */
-			break;
-unescaped:
-		cp->s = CSV_UNESCAPED;
-		case CSV_UNESCAPED:
-			if (ch == '\r')
-				cp->s = CSV_NEWLINE;
-			else if (ch == '\n')
-				_csv_next_row(cp);
-			else if (ch == '"')
-				cp->s = CSV_ESCAPED; /* deviates from RFC 4180 */
-			else if (ch == ',')
-				_csv_next_field(cp);
-			else if (buffer_addch(&cp->buf, ch))
-				return -1;
-			break;
-		case CSV_NEWLINE:
-			if (ch == '\n')
-				_csv_next_row(cp);
-			else
-				return -1;
-		case CSV_ERROR:
-			return -1;
-		}
-	}
-	return cp->s == CSV_ERROR ? -1 : 0;
-}
-
-static int csv_eof(struct csv_parser *cp)
-{
-	switch (cp->s) {
-	case CSV_START:
-		return 0;
-	case CSV_UNESCAPED:
-		_csv_next_field(cp);
-		return 0;
-	case CSV_ESCAPED:
-	case CSV_ESCAPED_DQUOTE:
-	case CSV_NEWLINE:
-	case CSV_ERROR:
-		return -1;
-	}
-	return -1;
-}
-
-static int csv_load(const char *filename, void *p,
-	int (*field)(void *p, unsigned row, unsigned col,
-		size_t len, const char *str),
-	int (*row_end)(void *p, unsigned row))
-{
-	char inbuf[1024];
-	char fieldbuf[4096];
-	int len;
-	struct csv_parser cp;
-	FILE *f;
-
-	f = fopen(filename, "r");
-	if (!f) {
-		perror(filename);
-		return -1;
-	}
-
-	if (csv_init(&cp, fieldbuf, sizeof(fieldbuf), p, field, row_end))
-		goto close_file;
-	do {
-		len = fread(inbuf, 1, sizeof(inbuf), f);
-		if (ferror(f)) {
-			perror(filename);
-			goto close_file;
-		}
-		if (csv(&cp, inbuf, len)) {
-			Error("%s:parse error (row=%d col=%d)\n",
-				filename, cp.row, cp.col);
-			goto close_file;
-		}
-	} while (!feof(f));
-	if (csv_eof(&cp)) {
-		Error("%s:parse error:unexpected end of file\n",
-			filename);
-		goto close_file;
-	}
-	fclose(f);
-	return 0;
-close_file:
-	fclose(f);
-	return -1;
-}
-
 /* update str and len to remove leading and trailing whitespace. */
 static void trim_whitespace(const char **str, size_t *len)
 {
@@ -1224,8 +995,11 @@ static int pi_row_end(void *p, unsigned row)
 		return -1;
 	ha_add(dom, pi->canonical);
 
-	if (net_listen(li_server_create, dom, pi->addr, pi->port))
+	Debug("listening... %s:%s\n", pi->addr, pi->port);
+	if (net_listen(li_server_create, dom, pi->addr, pi->port)) {
+		Error("Unable to listen (%s:%s)\n", pi->addr, pi->port);
 		return -1;
+	}
 
 	pi_free(pi);
 	return 0;
@@ -1352,7 +1126,7 @@ int main()
 {
 	if (config())
 		return 1;
-	wi_start(100);
+	wi_start(10);
 
 	main_loop();
 	return 0;

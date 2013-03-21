@@ -1,4 +1,5 @@
-CFLAGS ?= -Wall -W -g -DUSE_SYSLOG=1
+CFLAGS ?= -Wall -W -g
+# CFLAGS += -DUSE_SYSLOG=1
 #
 all :: tests
 .PHONY : all clean tests
@@ -7,7 +8,7 @@ all ::
 clean ::
 tests ::
 #
-OBJS_victory := victory.o channel.o net.o
+OBJS_victory := victory.o channel.o net.o csv2.o buffer.o
 all :: victory
 clean :: ; $(RM) victory $(OBJS_victory)
 victory : $(OBJS_victory)

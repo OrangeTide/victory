@@ -38,8 +38,8 @@ int net_listen(void (*create_server)(void *p, struct net_listen sock,
 	const char *node, const char *service)
 {
 	struct addrinfo hints = {
-		.ai_flags = AI_NUMERICHOST | AI_PASSIVE,
-		.ai_family = AF_INET,
+		.ai_flags = AI_PASSIVE,
+		.ai_family = AF_UNSPEC,
 		.ai_socktype = SOCK_STREAM,
 		.ai_protocol = 0,
 		.ai_next = NULL,
@@ -53,39 +53,49 @@ int net_listen(void (*create_server)(void *p, struct net_listen sock,
 		Error("create_server callback is NULL.\n");
 		return -1;
 	}
+	Debug("listen (%s:%s)\n", node, service);
 	e = getaddrinfo(node, service, &hints, &res);
 	if (e) {
-		Error("%s\n", gai_strerror(e));
+		Error("%s (%s:%s)\n", gai_strerror(e), node, service);
 		return -1;
 	}
+	Debug("res=%p\n", res);
 	for (cur = res; cur; cur = cur->ai_next) {
 		int fd;
 		const int yes = 1;
 
+		make_name(desc, sizeof(desc),
+			cur->ai_addr, cur->ai_addrlen);
+		Debug("cur=%p (name=%s family=%d socktype=%d proto=%d flags=%x addrlen=%ld)\n",
+			cur, desc, cur->ai_family, cur->ai_socktype, cur->ai_protocol,
+			cur->ai_flags, (long)cur->ai_addrlen);
 		fd = socket(cur->ai_family, cur->ai_socktype, cur->ai_protocol);
 		if (fd < 0) {
-			perror("socket()");
+			Error("socket():%s (%s:%s)\n", strerror(errno),
+				node, service);
 			goto fail_and_free;
 		}
 		fcntl(fd, F_SETFD, FD_CLOEXEC); /* this is a race */
 		e = setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
 		if (e) {
-			perror("SO_REUSEADDR");
+			Error("SO_REUSEADDR:%s (%s:%s)\n", strerror(errno),
+				node, service);
 			goto fail_and_free;
 		}
 		e = bind(fd, cur->ai_addr, cur->ai_addrlen);
 		if (e) {
-			perror("bind()");
+			Error("bind():%s (%s:%s)\n", strerror(errno),
+				node, service);
 			goto fail_and_free;
 		}
 		e = listen(fd, SOMAXCONN);
 		if (e) {
-			perror("listen()");
+			Error("listen():%s (%s:%s)\n", strerror(errno),
+				node, service);
 			goto fail_and_free;
 		}
-		make_name(desc, sizeof(desc),
-			cur->ai_addr, cur->ai_addrlen);
 		sock.fd = fd;
+		Debug("create server... %s\n", desc);
 		create_server(p, sock, strlen(desc), desc);
 	}
 	freeaddrinfo(res);
