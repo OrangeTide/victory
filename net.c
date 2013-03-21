@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012 Jon Mayo
+ * Copyright (c) 2012-2013 Jon Mayo
  *
  * Permission to use, copy, modify, and distribute this software for any
  * purpose with or without fee is hereby granted, provided that the above
@@ -33,8 +33,9 @@ static void make_name(char *buf, size_t buflen,
 	// TODO: return a value
 }
 
-int net_listen(struct net_listen *handle, const char *node, const char *service,
-	size_t desc_len, char *desc)
+int net_listen(void (*create_server)(void *p, struct net_listen sock,
+	size_t desc_len, const char *desc), void *p,
+	const char *node, const char *service)
 {
 	struct addrinfo hints = {
 		.ai_flags = AI_NUMERICHOST | AI_PASSIVE,
@@ -45,7 +46,13 @@ int net_listen(struct net_listen *handle, const char *node, const char *service,
 	};
 	struct addrinfo *res, *cur;
 	int e;
+	struct net_listen sock;
+	char desc[40];
 
+	if (!create_server) {
+		Error("create_server callback is NULL.\n");
+		return -1;
+	}
 	e = getaddrinfo(node, service, &hints, &res);
 	if (e) {
 		Error("%s\n", gai_strerror(e));
@@ -76,11 +83,10 @@ int net_listen(struct net_listen *handle, const char *node, const char *service,
 			perror("listen()");
 			goto fail_and_free;
 		}
-		if (desc)
-			make_name(desc, desc_len,
-				cur->ai_addr, cur->ai_addrlen);
-		handle->fd = fd;
-		break; // TODO: repeat for each entry we have found
+		make_name(desc, sizeof(desc),
+			cur->ai_addr, cur->ai_addrlen);
+		sock.fd = fd;
+		create_server(p, sock, strlen(desc), desc);
 	}
 	freeaddrinfo(res);
 	return 0;

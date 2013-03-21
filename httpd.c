@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012 Jon Mayo
+ * Copyright (c) 2012-2013 Jon Mayo
  *
  * Permission to use, copy, modify, and distribute this software for any
  * purpose with or without fee is hereby granted, provided that the above
@@ -121,20 +121,20 @@ void httpd_response(struct channel *ch, int status_code)
 	case 505: resp = resp505; resp_len = resp505_len; break;
 	}
 	Debug("%s:status_code=%d\n", ch->desc, status_code);
-	channel_write(ch, resp, resp_len);
+	ch_write(ch, resp, resp_len);
 }
 
 void httpd_header(struct channel *ch, const char *name, const char *value)
 {
-	channel_write(ch, name, strlen(name));
-	channel_write(ch, ": ", 2);
-	channel_write(ch, value, strlen(value));
-	channel_write(ch, "\r\n", 2);
+	ch_write(ch, name, strlen(name));
+	ch_write(ch, ": ", 2);
+	ch_write(ch, value, strlen(value));
+	ch_write(ch, "\r\n", 2);
 }
 
 void httpd_end_headers(struct channel *ch)
 {
-	channel_write(ch, "\r\n", 2);
+	ch_write(ch, "\r\n", 2);
 }
 
 static void on_method(void *p, const char *method, const char *uri)
@@ -166,7 +166,7 @@ static void on_header_done(void *p)
 	if (!host) {
 		httpd_response(ch, 400);
 		httpd_end_headers(ch);
-		channel_done(ch);
+		ch_done(ch);
 		return;
 	}
 	// TODO: pass Host to service_start
@@ -176,7 +176,7 @@ static void on_header_done(void *p)
 		httpd_response(ch, 404);
 		// TODO: write headers
 		httpd_end_headers(ch);
-		channel_done(ch);
+		ch_done(ch);
 		return;
 	}
 	Info("%s:connected to service.\n", ch->desc);
@@ -187,7 +187,7 @@ static void on_header_done(void *p)
 		Error("%s:could not find service or start module\n", ch->desc);
 		httpd_response(ch, 501);
 		httpd_end_headers(ch);
-		channel_done(ch);
+		ch_done(ch);
 		return;
 	}
 	mod->on_header_done(ch, hc->app_data, &hc->headers);
@@ -202,7 +202,7 @@ static void httpd_process(struct httpchannel *hc)
 {
 	struct channel *ch = &hc->channel;
 
-	while (!ch->done && channel_fill(ch) > 0) {
+	while (!ch->done && ch_fill(ch) > 0) {
 		if (httpparser(&hc->hp, ch->buf, ch->buf_cur, hc, on_method,
 			on_header, on_header_done, on_data)) {
 			Info("%s:parse failure\n", ch->desc);
@@ -214,26 +214,26 @@ static void httpd_process(struct httpchannel *hc)
 	}
 }
 
-static void httpchannel_cleanup(struct httpchannel *hc)
+static void httpch_cleanup(struct httpchannel *hc)
 {
 	data_free(hc->app_data);
 	hc->app_data = NULL;
-	channel_close(&hc->channel);
+	ch_close(&hc->channel);
 }
 
 static void worker_cleanup(void *p)
 {
 	struct httpchannel *hc = p;
 
-	httpchannel_cleanup(hc);
+	httpch_cleanup(hc);
 }
 
-static void httpchannel_init(struct httpchannel *hc, struct net_socket sock,
+static void httpch_init(struct httpchannel *hc, struct net_socket sock,
 	const char *desc)
 {
 	memset(hc, 0, sizeof(*hc));
 	httpparser_init(&hc->hp);
-	channel_init(&hc->channel, sock, desc);
+	ch_init(&hc->channel, sock, desc);
 	env_init(&hc->headers);
 }
 
@@ -244,7 +244,7 @@ static int server_accept(struct server *serv, struct httpchannel *hc)
 
 	if (net_accept(&serv->listen_handle, &new_sock, sizeof(desc), desc))
 		return -1;
-	httpchannel_init(hc, new_sock, desc);
+	httpch_init(hc, new_sock, desc);
 	return 0;
 }
 
@@ -262,7 +262,7 @@ static void *worker_start(void *p)
 			return NULL;
 		httpd_process(hc);
 		Debug("%s:connection terminated\n", hc->channel.desc);
-		httpchannel_cleanup(hc);
+		httpch_cleanup(hc);
 	}
 	pthread_cleanup_pop(1);
 	return NULL;
@@ -321,6 +321,12 @@ static void server_add_entry(struct net_listen listen_handle, const char *desc)
 	server_head = serv;
 }
 
+static void _server_create(void *p, struct net_listen sock,
+        size_t desc_len, const char *desc)
+{
+	server_add_entry(sock, desc);
+}
+
 int httpd_poolsize(int newsize)
 {
 	pool_size = newsize;
@@ -329,12 +335,8 @@ int httpd_poolsize(int newsize)
 
 int httpd_start(const char *node, const char *service)
 {
-	char desc[64];
-	struct net_listen listen_handle;
-
-	if (net_listen(&listen_handle, node, service, sizeof(desc), desc))
+	if (net_listen(_server_create, NULL, node, service))
 		return -1;
-	server_add_entry(listen_handle, desc);
 	return 0;
 }
 

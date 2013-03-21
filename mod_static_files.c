@@ -128,7 +128,7 @@ static void on_header_done(struct channel *ch, struct data *app_data,
 	if (open_path(info, info->base, info->uri)) {
 		httpd_response(ch, 404);
 		httpd_end_headers(ch);
-		channel_done(ch);
+		ch_done(ch);
 		return;
 	}
 
@@ -153,17 +153,17 @@ static void on_header_done(struct channel *ch, struct data *app_data,
 		res = read(info->fd, buf, sizeof(buf));
 		if (res < 0) {
 			perror(__func__);
-			channel_done(ch);
+			ch_done(ch);
 			return;
 		}
 		if (total_sent + res > info->stat_buf.st_size)
 			res = info->stat_buf.st_size - total_sent;
-		channel_write(ch, buf, res);
+		ch_write(ch, buf, res);
 		total_sent += res;
 	}
 
 	/* TODO: support persistent */
-	channel_done(ch);
+	ch_done(ch);
 }
 
 static void on_data(struct channel *ch, struct data *app_data, size_t len,

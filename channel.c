@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012 Jon Mayo
+ * Copyright (c) 2012-2013 Jon Mayo
  *
  * Permission to use, copy, modify, and distribute this software for any
  * purpose with or without fee is hereby granted, provided that the above
@@ -38,7 +38,7 @@ static void buf_commit(size_t buf_max, size_t *buf_cur, size_t count)
 	(*buf_cur) += count;
 }
 
-void channel_init(struct channel *ch, struct net_socket sock, const char *desc)
+void ch_init(struct channel *ch, struct net_socket sock, const char *desc)
 {
 	memset(ch, 0, sizeof(*ch));
 	ch->buf_max = sizeof(ch->buf);
@@ -47,12 +47,17 @@ void channel_init(struct channel *ch, struct net_socket sock, const char *desc)
 	ch->desc = desc ? strdup(desc) : NULL;
 }
 
-void channel_done(struct channel *ch)
+static ch_is_connected(struct channel *ch)
+{
+	return ch->sock.fd != -1;
+}
+
+void ch_done(struct channel *ch)
 {
 	ch->done = 1;
 }
 
-void channel_close(struct channel *ch)
+void ch_close(struct channel *ch)
 {
 	if (!ch)
 		return;
@@ -64,12 +69,12 @@ void channel_close(struct channel *ch)
 	ch->desc = NULL;
 }
 
-int channel_fill(struct channel *ch)
+int ch_fill(struct channel *ch)
 {
 	ssize_t res;
 	size_t count;
 
-	count = buf_check(&ch->buf_max, ch->buf_cur, CHUNK_SIZE);
+	count = buf_check(&ch->buf_max, ch->buf_cur, CHANNEL_CHUNK_SIZE);
 	assert(count != 0);
 	res = read(ch->sock.fd, ch->buf + ch->buf_cur, count);
 	Debug("%s:read %zd bytes (asked for %zd bytes)\n",
@@ -85,7 +90,7 @@ int channel_fill(struct channel *ch)
 
 }
 
-int channel_write(struct channel *ch, const void *buf, size_t count)
+int ch_write(struct channel *ch, const void *buf, size_t count)
 {
 	while (count > 0) {
 		ssize_t res;
@@ -95,7 +100,7 @@ int channel_write(struct channel *ch, const void *buf, size_t count)
 		res = write(ch->sock.fd, buf, count);
 		if (res < 0) {
 			perror(ch->desc);
-			channel_done(ch);
+			ch_done(ch);
 			return res;
 		}
 		count -= res;
@@ -105,13 +110,34 @@ int channel_write(struct channel *ch, const void *buf, size_t count)
 	return 0;
 }
 
-void channel_printf(struct channel *ch, const char *fmt, ...)
+int ch_printf(struct channel *ch, const char *fmt, ...)
 {
 	va_list ap;
-	char buf[128];
+	int res;
 
+	if (!ch_is_connected(ch))
+		return -1;
 	va_start(ap, fmt);
-	vsnprintf(buf, sizeof(buf), fmt, ap);
+	res = vdprintf(ch->sock.fd, fmt, ap);
 	va_end(ap);
-	channel_write(ch, buf, strlen(buf));
+	return res;
+}
+
+int ch_puts(struct channel *ch, const char *str)
+{
+	size_t cur = 0, len = strlen(str);
+	ssize_t res;
+
+	if (!ch_is_connected(ch))
+		return -1;
+	do {
+		res = send(ch->sock.fd, str + cur, len - cur, 0);
+		if (res < 0) {
+			SysError();
+			break;
+		}
+		assert(res != 0);
+		cur += res;
+	} while(cur < len);
+	return len;
 }

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012 Jon Mayo
+ * Copyright (c) 2012-2013 Jon Mayo
  *
  * Permission to use, copy, modify, and distribute this software for any
  * purpose with or without fee is hereby granted, provided that the above
@@ -24,8 +24,9 @@ struct net_socket {
 	int fd;
 };
 
-int net_listen(struct net_listen *handle, const char *node, const char *service,
-	size_t desc_len, char *desc);
+int net_listen(void (*create_server)(void *p, struct net_listen sock,
+	size_t desc_len, const char *desc), void *p,
+	const char *node, const char *service);
 int net_accept(struct net_listen *listen_handle, struct net_socket *socket,
 	size_t desc_len, char *desc);
 #endif

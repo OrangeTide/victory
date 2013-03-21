@@ -80,10 +80,10 @@ static void on_header_done(struct channel *ch, struct data *app_data,
 
 	httpd_end_headers(ch);
 
-	channel_write(ch, buf, buf_len);
+	ch_write(ch, buf, buf_len);
 
 	/* TODO: support persistent */
-	channel_done(ch);
+	ch_done(ch);
 }
 
 static void on_data(struct channel *ch, struct data *app_data, size_t len,

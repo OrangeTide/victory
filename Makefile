@@ -7,7 +7,7 @@ all ::
 clean ::
 tests ::
 #
-OBJS_victory := victory.o
+OBJS_victory := victory.o channel.o net.o
 all :: victory
 clean :: ; $(RM) victory $(OBJS_victory)
 victory : $(OBJS_victory)

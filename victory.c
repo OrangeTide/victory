@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012 Jon Mayo
+ * Copyright (c) 2012-2013 Jon Mayo
  *
  * Permission to use, copy, modify, and distribute this software for any
  * purpose with or without fee is hereby granted, provided that the above
@@ -29,24 +29,13 @@
 #include <unistd.h>
 #include <dlfcn.h>
 
-#define HT_RESPONSE_200 "HTTP/1.1 200 OK\r\n"
-#define HT_RESPONSE_400 "HTTP/1.1 400 Bad Request\r\n"
-#define HT_RESPONSE_403 "HTTP/1.1 403 Forbidden\r\n"
-#define HT_RESPONSE_404 "HTTP/1.1 404 Not Found\r\n"
-
-#define sys_error() fprintf(stderr, "%s():%d:%s\n", \
-	__func__, __LINE__, strerror(errno));
-
-#define ht_response(ch, status) ch_puts((ch), HT_RESPONSE_##status)
+#include "channel.h"
+#include "net.h"
+#include "logger.h"
 
 struct listen {
-	int fd;
+	struct net_listen sock;
 	struct listen *next;
-};
-
-struct channel {
-	int fd;
-	bool connected;
 };
 
 struct buffer {
@@ -129,170 +118,52 @@ static unsigned work_cur, work_max;
 static struct host_alias *host_alias_head;
 static struct module *module_head;
 
-static void ch_init(struct channel *ch, int fd)
-{
-	ch->connected = true;
-	ch->fd = fd;
-}
-
-static int net_listen(int *fd, struct addrinfo *ai)
-{
-	int res;
-	int _fd;
-	const int yes = 1;
-
-	_fd = socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
-	if (_fd < 0) {
-		sys_error();
-		return -1;
-	}
-	/* disable IPv4-to-IPv6 mapping */
-	if (ai->ai_family == AF_INET6)  {
-		res = setsockopt(_fd, IPPROTO_IPV6, IPV6_V6ONLY,
-			&yes, sizeof(yes));
-		if (res)
-			goto error_and_close;
-	}
-	res = setsockopt(_fd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
-	if (res)
-		goto error_and_close;
-	res = bind(_fd, ai->ai_addr, ai->ai_addrlen);
-	if (res)
-		goto error_and_close;
-	res = listen(_fd, 6);
-	if (res)
-		goto error_and_close;
-	if (fd)
-		*fd = _fd;
-	return 0;
-error_and_close:
-	sys_error();
-	close(_fd);
-	return -1;
-}
-
-static int li_add(int fd)
+static int li_add(struct net_listen sock)
 {
 	struct listen *li;
 
 	li = calloc(1, sizeof(*li));
 	if (!li) {
-		sys_error();
+		SysError();
 		return -1;
 	}
 
-	li->fd = fd;
+	li->sock = sock;
 	li->next = listen_head;
 	listen_head = li;
 
 	return 0;
 }
 
-static int ht_listen(const char *node, const char *service)
+void ht_response(struct channel *ch, int status_code)
 {
-	struct addrinfo hints;
-	struct addrinfo *res, *curr;
-	int e;
-	int ret = 0;
+	const char *resp;
 
-	memset(&hints, 0, sizeof(hints));
-	hints.ai_flags = AI_PASSIVE;
-	hints.ai_family = AF_UNSPEC;
-	hints.ai_protocol = 0;
-	hints.ai_socktype = SOCK_STREAM;
-	hints.ai_next = NULL;
-
-	e = getaddrinfo(node, service, &hints, &res);
-	if (e) {
-		fprintf(stderr, "%s():%s\n", __func__, gai_strerror(e));
-		return -1;
+	switch (status_code) {
+	case 200: resp = "HTTP/1.1 200 OK\r\n"; break;
+	case 400: resp = "HTTP/1.1 400 Bad Request\r\n"; break;
+	case 403: resp = "HTTP/1.1 403 Forbidden\r\n";
+	case 404: resp = "HTTP/1.1 404 Not Found\r\n";
+	default:
+	case 500: resp = "HTTP/1.1 500 Internal Server Error\r\n"; break;
+	case 501: resp = "HTTP/1.1 501 Not Implemented\r\n"; break;
+	case 502: resp = "HTTP/1.1 502 Bad Gateway\r\n"; break;
+	case 503: resp = "HTTP/1.1 503 Service Unavailable\r\n"; break;
+	case 504: resp = "HTTP/1.1 504 Gateway Timeout\r\n"; break;
+	case 505: resp = "HTTP/1.1 505 HTTP Version Not Supported\r\n"; break;
 	}
-
-	for (curr = res; curr; curr = curr->ai_next) {
-		int fd;
-		char host[40], serv[16];
-
-		/* currently we only support IPv4 and IPv6 */
-		if (curr->ai_family != AF_INET && curr->ai_family != AF_INET6)
-			continue;
-
-		getnameinfo(curr->ai_addr, curr->ai_addrlen, host, sizeof(host),
-			serv, sizeof(serv), NI_NUMERICHOST | NI_NUMERICSERV);
-
-		if (net_listen(&fd, curr)) {
-			fprintf(stderr, "%s():failed to add %s:%s\n", __func__,
-				host, serv);
-			ret = -1;
-		} else if (li_add(fd)) {
-			close(fd);
-		} else {
-			fprintf(stderr, "%s():listen on %s:%s\n", __func__,
-				host, serv);
-		}
-	}
-
-	freeaddrinfo(res);
-
-	return ret;
+	Debug("CHAN=%s status_code=%d\n", ch->desc, status_code);
+	ch_puts(ch, resp);
 }
 
-static int ch_puts(struct channel *ch, const char *str)
+static void li_server_create(void *p, struct net_listen sock,
+	size_t desc_len, const char *desc)
 {
-	size_t cur = 0, len = strlen(str);
-	ssize_t res;
-
-	if (!ch->connected)
-		return -1;
-	do {
-		res = send(ch->fd, str + cur, len - cur, 0);
-		if (res < 0) {
-			sys_error();
-			break;
-		}
-		assert(res != 0);
-		cur += res;
-	} while(cur < len);
-	return len;
-}
-
-static int ch_printf(struct channel *ch, const char *fmt, ...)
-{
-	va_list ap;
-	int res;
-
-	if (!ch->connected)
-		return -1;
-	va_start(ap, fmt);
-	res = vdprintf(ch->fd, fmt, ap);
-	va_end(ap);
-	return res;
-}
-
-static int net_accept(struct listen *li, struct channel *ch)
-{
-	struct sockaddr_storage ss;
-	socklen_t ss_len = sizeof(ss);
-	int newfd;
-
-	do {
-		newfd = accept(li->fd, (struct sockaddr*)&ss, &ss_len);
-	} while (newfd < 0 && errno == EINTR);
-	if (newfd < 0) {
-		sys_error();
-		return -1;
-	}
-	ch_init(ch, newfd);
-	return 0;
-}
-
-static void ch_close(struct channel *ch)
-{
-	if (!ch->connected)
+	if (li_add(sock)) {
+		close(sock.fd);
 		return;
-	assert(ch->fd != -1);
-	close(ch->fd);
-	ch->fd = -1;
-	ch->connected = false;
+	}
+	Info("listen:%s\n", desc);
 }
 
 #define buffer_wrap(str) { 0, sizeof(str), (str) }
@@ -407,34 +278,6 @@ static int env_set(struct env *env, const char *n, const char *v)
 	return 0;
 }
 
-static int fill(struct channel *ch, struct buffer *bu)
-{
-	ssize_t res;
-
-	if (!ch->connected)
-		return -1;
-	if (bu->max == bu->cur)
-		return -1;
-	if (bu->cur)
-		return 0;
-
-	do {
-		assert(ch->fd > 0);
-		assert(bu->cur < bu->max);
-		res = recv(ch->fd, bu->data + bu->cur, bu->max - bu->cur, 0);
-	} while (res < 0 && errno == EINTR);
-
-	if (res <= 0) {
-		if (res < 0)
-			sys_error();
-		ch_close(ch);
-		return -1;
-	}
-
-	bu->cur += res;
-	return 0;
-}
-
 static void ms_init(struct methodline_state *ms)
 {
 	memset(ms, 0, sizeof(*ms));
@@ -498,10 +341,10 @@ complete:
 	buffer_consume(bu, s - bu->data);
 	return 0;
 parse_error:
-	fprintf(stderr, "%s():parse failure (%.*s)\n",
+	Error("%s():parse failure (%.*s)\n",
 		__func__, bu->cur, bu->data);
 	buffer_consume(bu, s - bu->data);
-	fprintf(stderr, "%s():parse failure @ %d (state=%d)\n",
+	Error("%s():parse failure @ %d (state=%d)\n",
 		__func__, bu->cur, ms->state);
 	return -1;
 }
@@ -517,7 +360,7 @@ static int ht_method(struct channel *ch, struct buffer *bu,
 	buffer_init(&uri, uri_str, uri_len);
 	buffer_init(&version, version_str, version_len);
 	ms_init(&ms);
-	while (!fill(ch, bu)) {
+	while (!ch_fill(ch)) {
 		if (methodline_parse(bu, &ms, &method, &uri, &version)) {
 			ch_close(ch);
 			return -1;
@@ -627,10 +470,10 @@ complete:
 	buffer_consume(bu, s - bu->data);
 	return 0;
 parse_error:
-	fprintf(stderr, "%s():parse failure (%.*s)\n",
+	Error("%s():parse failure (%.*s)\n",
 		__func__, bu->cur, bu->data);
 	buffer_consume(bu, s - bu->data);
-	fprintf(stderr, "%s():parse failure @ %d (ch=%c state=%d)\n",
+	Error("%s():parse failure @ %d (ch=%c state=%d)\n",
 		__func__, bu->cur, ch, hs->state);
 	return -1;
 }
@@ -648,7 +491,7 @@ static int ht_headers(struct channel *ch, struct buffer *bu, struct env *env)
 	buffer_reset(&value);
 	env_init(env);
 	hs_init(&hs);
-	while (!fill(ch, bu)) {
+	while (!ch_fill(ch)) {
 		if (headers_parse(bu, &hs, &name, &value, env)) {
 			ch_close(ch);
 			return -1;
@@ -665,13 +508,13 @@ static int ha_add(struct domain *dom, const char *alias)
 
 	ha = calloc(1, sizeof(*ha));
 	if (!ha) {
-		sys_error();
+		SysError();
 		return -1;
 	}
 
 	ha->host = strdup(alias);
 	if (!ha->host) {
-		sys_error();
+		SysError();
 		free(ha);
 		return -1;
 	}
@@ -720,12 +563,12 @@ static struct domain *dom_create(const char *name)
 		return dom;
 	dom = calloc(1, sizeof(*dom));
 	if (!dom) {
-		sys_error();
+		SysError();
 		return NULL;
 	}
 	dom->name = strdup(name);
 	if (!dom->name) {
-		sys_error();
+		SysError();
 		free(dom);
 		return NULL;
 	}
@@ -743,7 +586,7 @@ static int dll_open(struct module_handle *mh, const char *path, const char *args
 #if 0
 	h = dlopen(path, RTLD_NOW);
 	if (!h) {
-		fprintf(stderr, "ERROR:unable to load module '%s':%s\n",
+		Error("unable to load module '%s':%s\n",
 			path, dlerror());
 		return -1;
 	}
@@ -784,13 +627,13 @@ static struct module *mo_load(const char *name, const char *dll_path, const char
 
 	mo = mo_find(name);
 	if (mo) {
-		fprintf(stderr, "module '%s' is already loaded\n", name);
+		Error("module '%s' is already loaded\n", name);
 		return NULL;
 	}
 
 	mo = calloc(1, sizeof(*mo));
 	if (!mo) {
-		sys_error();
+		SysError();
 		return NULL;
 	}
 
@@ -800,7 +643,7 @@ static struct module *mo_load(const char *name, const char *dll_path, const char
 	mo->next = module_head;
 	module_head = mo;
 
-	printf("MODULE:%s\n", name);
+	Info("MODULE:%s\n", name);
 	return mo;
 error:
 	free(mo);
@@ -864,27 +707,27 @@ static int se_add(struct domain *dom, const char *prefix, const char *module)
 	assert(dom != NULL);
 	mo = mo_find(module);
 	if (!mo) {
-		fprintf(stderr, "ERROR:module '%s' unknown for service %s:%s\n",
+		Error("module '%s' unknown for service %s:%s\n",
 			module, dom->name, prefix);
 		return -1;
 	}
 
 	se = se_find_exact(dom, prefix);
 	if (se) {
-		fprintf(stderr, "ERROR:service path '%s' for domain "
-			"'%s' matches existing entry\n", prefix, dom->name);
+		Error("service path '%s' for domain '%s' matches existing entry\n",
+			prefix, dom->name);
 		return -1;
 	}
 
 	se = calloc(1, sizeof(*se));
 	if (!se) {
-		sys_error();
+		SysError();
 		return -1;
 	}
 
 	se->prefix = strdup(prefix);
 	if (!se->prefix) {
-		sys_error();
+		SysError();
 		free(se);
 		return -1;
 	}
@@ -892,7 +735,7 @@ static int se_add(struct domain *dom, const char *prefix, const char *module)
 	se->next = dom->service_head;
 	dom->service_head = se;
 
-	printf("SERVICE:dom=\"%s\" path=\"%s\" module=\"%s\"\n",
+	Info("SERVICE:dom=\"%s\" path=\"%s\" module=\"%s\"\n",
 		dom->name, prefix, module);
 
 	return 0;
@@ -940,10 +783,10 @@ static int ht_process(struct channel *ch)
 		return 0;
 	}
 
-	printf("method=\"%s\"\n", method);
-	printf("uri=\"%s\"\n", uri);
-	printf("version=\"%s\"\n", version);
-	printf("Host=\"%s\" (%s)\n", host, dom->name);
+	Debug("method=\"%s\"\n", method);
+	Debug("uri=\"%s\"\n", uri);
+	Debug("version=\"%s\"\n", version);
+	Debug("Host=\"%s\" (%s)\n", host, dom->name);
 
 	se = se_find(dom, uri, &sub);
 	if (!se) {
@@ -975,10 +818,13 @@ static void *worker_loop(void *p)
 {
 	struct work_info *wi = p;
 	struct channel ch;
+	char desc[40];
+	struct net_socket sock;
 
 	while (wi->active) {
-		if (net_accept(wi->li, &ch))
+		if (net_accept(&wi->li->sock, &sock, sizeof(desc), desc))
 			break;
+		ch_init(&ch, sock, desc);
 		ht_process(&ch);
 		ch_close(&ch);
 	}
@@ -1018,20 +864,20 @@ static void wi_start(unsigned count)
 			wi->li = curr;
 			e = pthread_create(&wi->thr, NULL, worker_loop, wi);
 			if (e) {
-				sys_error();
+				SysError();
 				free(wi);
 				break;
 			}
 			e = pthread_detach(wi->thr);
 			if (e) {
-				sys_error();
+				SysError();
 				/* TODO: handle this error */
 			}
 			wi = NULL;
 			work[work_cur++] = wi;
 		}
 	}
-	printf("thread count at %d\n", work_cur);
+	Info("thread count at %d\n", work_cur);
 }
 
 static void main_loop(void)
@@ -1045,10 +891,10 @@ static void main_loop(void)
 		sigemptyset(&set);
 		s = sigwaitinfo(&set, &info);
 		if (s < 0) {
-			sys_error();
+			SysError();
 			break;
 		}
-		printf("SIGNAL %d\n", s);
+		Info("SIGNAL %d\n", s);
 	}
 
 }
@@ -1212,13 +1058,13 @@ static int csv_load(const char *filename, void *p,
 			goto close_file;
 		}
 		if (csv(&cp, inbuf, len)) {
-			fprintf(stderr, "%s:parse error (row=%d col=%d)\n",
+			Error("%s:parse error (row=%d col=%d)\n",
 				filename, cp.row, cp.col);
 			goto close_file;
 		}
 	} while (!feof(f));
 	if (csv_eof(&cp)) {
-		fprintf(stderr, "%s:parse error:unexpected end of file\n",
+		Error("%s:parse error:unexpected end of file\n",
 			filename);
 		goto close_file;
 	}
@@ -1282,7 +1128,7 @@ static int mi_field(void *p, unsigned row, unsigned col,
 		mi->args = strndup(str, len);
 		break;
 	default:
-		printf("FIELD:%d:%d:\"%s\":unknown field\n", row, col, str);
+		Error("FIELD:%d:%d:\"%s\":unknown field\n", row, col, str);
 		return -1;
 	}
 
@@ -1354,7 +1200,7 @@ static int pi_field(void *p, unsigned row, unsigned col,
 		pi->canonical = strndup(str, len);
 		break;
 	default:
-		printf("FIELD:%d:%d:\"%s\":unknown field\n", row, col, str);
+		Error("FIELD:%d:%d:\"%s\":unknown field\n", row, col, str);
 		return -1;
 	}
 
@@ -1378,7 +1224,7 @@ static int pi_row_end(void *p, unsigned row)
 		return -1;
 	ha_add(dom, pi->canonical);
 
-	if (ht_listen(pi->addr, pi->port))
+	if (net_listen(li_server_create, dom, pi->addr, pi->port))
 		return -1;
 
 	pi_free(pi);
@@ -1424,7 +1270,7 @@ static int si_field(void *p, unsigned row, unsigned col,
 		si->module = strndup(str, len);
 		break;
 	default:
-		fprintf(stderr, "FIELD:%d:%d:\"%s\":unknown field\n",
+		Error("FIELD:%d:%d:\"%s\":unknown field\n",
 			row, col, str);
 		return -1;
 	}

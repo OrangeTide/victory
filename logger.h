@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012 Jon Mayo
+ * Copyright (c) 2012-2013 Jon Mayo
  *
  * Permission to use, copy, modify, and distribute this software for any
  * purpose with or without fee is hereby granted, provided that the above
@@ -58,15 +58,22 @@
 #define ADD_SECOND_ARGUMENT(x, y, z) z, x, y
 #define INSERT_SECOND_ARGUMENT(x, y, z, ...) z, x, y, __VA_ARGS__
 
+#include <string.h>
+#include <errno.h>
+
 #ifdef USE_SYSLOG
 # include <syslog.h>
 # define Warning(...) syslog(LOG_WARNING, __VA_ARGS__)
 # define Error(...) syslog(LOG_ERR, __VA_ARGS__)
 # define Info(...) syslog(LOG_INFO,  __VA_ARGS__)
+# define SysError() syslog(LOG_ERR, "Error:%s():%d:%s\n", \
+	__func__, __LINE__, strerror(errno));
 #else
 # define Warning(...) fprintf(stderr, "Warning:" __VA_ARGS__)
 # define Error(...) fprintf(stderr, "Error:" __VA_ARGS__)
 # define Info(...) fprintf(stderr, "Info:"  __VA_ARGS__)
+# define SysError() fprintf(stderr, "Error:%s():%d:%s\n", \
+	__func__, __LINE__, strerror(errno));
 #endif
 
 /* don't support Debug() output to syslog */

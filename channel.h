@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012 Jon Mayo
+ * Copyright (c) 2012-2013 Jon Mayo
  *
  * Permission to use, copy, modify, and distribute this software for any
  * purpose with or without fee is hereby granted, provided that the above
@@ -18,7 +18,7 @@
 #include <stddef.h>
 #include "net.h"
 
-#define CHUNK_SIZE 256
+#define CHANNEL_CHUNK_SIZE 256
 
 struct channel {
 	struct net_socket sock;
@@ -26,13 +26,14 @@ struct channel {
 	size_t buf_max;
 	size_t buf_cur;
 	int done;
-	char buf[CHUNK_SIZE * 16];
+	char buf[CHANNEL_CHUNK_SIZE * 16];
 };
 
-void channel_init(struct channel *ch, struct net_socket sock, const char *desc);
-void channel_done(struct channel *ch);
-void channel_close(struct channel *ch);
-int channel_fill(struct channel *ch);
-int channel_write(struct channel *ch, const void *buf, size_t count);
-void channel_printf(struct channel *ch, const char *fmt, ...);
+void ch_init(struct channel *ch, struct net_socket sock, const char *desc);
+void ch_done(struct channel *ch);
+void ch_close(struct channel *ch);
+int ch_fill(struct channel *ch);
+int ch_write(struct channel *ch, const void *buf, size_t count);
+int ch_printf(struct channel *ch, const char *fmt, ...);
+int ch_puts(struct channel *ch, const char *str);
 #endif
