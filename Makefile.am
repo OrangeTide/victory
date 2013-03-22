@@ -1,4 +1,4 @@
-bin_PROGRAMS = victory serv
+bin_PROGRAMS = victory serv psserver
 
 # TODO: let configure detect these
 AM_CFLAGS = -Wall -W -g
@@ -8,6 +8,11 @@ victory_SOURCES = victory.c channel.c net.c csv2.c buffer.c
 victory_CFLAGS = -pthread
 victory_LDFLAGS = -pthread
 victory_LDADD = -ldl
+
+psserver_SOURCES = psserver.c net.c
+psserver_CFLAGS = -pthread # only because net.o needed it
+psserver_LDFLAGS = -pthread
+psserver_LDADD = -lev
 
 serv_SOURCES = serv.c httpd.c module.c service.c httpparser.c channel.c \
 	daemonize.c csv.c net.c env.c util.c ext.c \
