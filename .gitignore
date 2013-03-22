@@ -3,3 +3,19 @@
 *.a
 *.so
 .*.swp
+
+# autotools files
+Makefile.in
+aclocal.m4
+autom4te.cache/
+config.guess
+config.sub
+configure
+depcomp
+install-sh
+missing
+.deps/
+/Makefile
+config.log
+config.status
+test-driver
